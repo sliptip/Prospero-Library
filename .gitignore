@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+node_modules/
+dist/
+data/
+tools/fpkg-cli/
+.env
+.env.*
+!.env.example
+/release/
+*.spec
+*.pyc
+test-results/
