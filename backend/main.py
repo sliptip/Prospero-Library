@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import __version__, catalog, patches, scanner
-from .artwork import (ARTWORK_KEYS, ART_NAME, IMAGE_HOSTS, MAX_IMAGE, PS_STORE_SOURCE, Artwork,
+from .artwork import (ARTWORK_KEYS, ART_NAME, IMAGE_HOSTS, MAX_IMAGE, PS_STORE_SOURCE, STORE_PRODUCT_SETTING, Artwork,
                       playstation_about, playstation_dlc, playstation_dlc_description, playstation_url, store_image)
 from .backup import BUNDLE_NAME, create_backup, restore_backup
 from .database import APP_DIRECTORY, BASE, Database, app_data_directory
@@ -72,7 +72,7 @@ def create_app(data_directory=None, frontend_directory=None):
     load_dotenv(APP_DIRECTORY / ".env")
     database = Database(data_directory if data_directory is not None else app_data_directory())
     jobs = Jobs(database)
-    artwork = Artwork(database.directory)
+    artwork = Artwork(database=database)
     candidates = {}
     log_path = database.directory / "logs" / "prospero.log"
     front = Path(frontend_directory or os.getenv("PROSPERO_FRONTEND") or BASE / "frontend" / "dist")
@@ -206,7 +206,8 @@ def create_app(data_directory=None, frontend_directory=None):
     @app.get("/api/games/{game_id}/about")
     def game_about(game_id: int):
         with database.connect() as db:
-            content_id = required_game(db, game_id)["content_id"]
+            item = required_game(db, game_id)
+            content_id = item["content_id"]
             if not playstation_url(content_id):
                 return None
             cached = db.execute("SELECT details FROM store_about WHERE content_id=?", (content_id,)).fetchone()
@@ -216,7 +217,7 @@ def create_app(data_directory=None, frontend_directory=None):
 
         try:
             with httpx.Client(timeout=httpx.Timeout(18, connect=5), follow_redirects=False) as client:
-                details = playstation_about(client, content_id)
+                details = artwork.store_lookup(client, item["title"], content_id, playstation_about)
         except httpx.HTTPStatusError as error:
             if saved:
                 return saved
@@ -248,7 +249,7 @@ def create_app(data_directory=None, frontend_directory=None):
             return []
         try:
             with httpx.Client(timeout=httpx.Timeout(12, connect=5), follow_redirects=False) as client:
-                return playstation_dlc(client, content_id)
+                return artwork.store_lookup(client, games[0]["title"], content_id, playstation_dlc) or []
         except (httpx.HTTPError, KeyError, TypeError, ValueError, AttributeError, ImportError) as error:
             raise HTTPException(502, "Не удалось загрузить дополнения из PlayStation Store") from error
 
@@ -360,7 +361,8 @@ def create_app(data_directory=None, frontend_directory=None):
             config.pop("game_order", None)
             config.pop("card_identities", None)
             roots = [dict(row) for row in db.execute("SELECT * FROM roots ORDER BY id")]
-        return {**config, "hide_recent": config.get("hide_recent") == "1",
+        public = {key: value for key, value in config.items() if not key.startswith(STORE_PRODUCT_SETTING)}
+        return {**public, "hide_recent": config.get("hide_recent") == "1",
                 "roots": roots, "providers": artwork.providers(), "cli_local": scanner.local_cli() is not None}
 
     @app.patch("/api/settings/artwork")

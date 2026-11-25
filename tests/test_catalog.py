@@ -624,6 +624,74 @@ class LocalCatalogTest(unittest.TestCase):
         self.assertEqual([item["url"] for item in candidates], [url])
         self.assertEqual(requests, [f"/ru-ua/product/{content_id}", f"/en-gb/product/{content_id}"])
 
+    def test_store_finds_standard_edition_when_pkg_content_id_has_no_page(self):
+        package_id = "EP0082-PPSA08668_00-EUROPE0000000000"
+        store_id = "EP0082-PPSA08668_00-0783148264580163"
+        demo_id = "EP0082-PPSA08668_00-0886721485938168"
+        similar_id = "EP0082-PPSA01903_00-0000000000000000"
+        wrong_region_id = "UP0082-PPSA08668_00-0000000000000000"
+        with sqlite3.connect(self.data / "library.db") as db:
+            db.execute("UPDATE games SET title='FINAL FANTASY VII REBIRTH',title_id='PPSA08668',cover=NULL,background=NULL")
+            db.execute("UPDATE builds SET content_id=?", (package_id,))
+
+        links = f"""
+            <a href="{artwork.playstation_url(similar_id)}">Standard Edition</a>
+            <a href="{artwork.playstation_url(wrong_region_id)}">Standard Edition</a>
+            <a href="{artwork.playstation_url(demo_id, 'en-gb')}">FINAL FANTASY VII REBIRTH DEMO</a>
+            <a href="{artwork.playstation_url(store_id, 'en-gb')}"><span>Standard Edition</span></a>
+        """
+        cover = "https://image.api.playstation.com/vulcan/rebirth-cover.jpg"
+        background = "https://image.api.playstation.com/vulcan/rebirth-background.jpg"
+        image = io.BytesIO()
+        Image.new("RGB", (240, 360), "blue").save(image, "JPEG")
+
+        def slot(**fields):
+            data = json.dumps({"cache": {f"Product:{store_id}": {"id": store_id, **fields}}})
+            return {"text": f"<script>{data}</script>"}
+
+        props = {"productId": store_id, "locale": "ru-ua", "batarangs": {
+            "media-carousel": slot(media=[{"role": "SCREENSHOT", "type": "IMAGE", "url": background}]),
+            "background-image": slot(media=[{"role": "GAMEHUB_COVER_ART", "type": "IMAGE", "url": background}]),
+            "upsells": slot(media=[{"role": "MASTER", "type": "IMAGE", "url": cover}]),
+            "info": slot(publisherName="Square Enix LTD", screenLanguages=["en", "ja"],
+                         descriptions=[{"type": "LONG", "value": "Описание игры на русском языке."}]),
+        }}
+        page = json.dumps({"props": {"pageProps": props}}).replace("<", r"\u003c")
+        marketing = "https://www.playstation.com/en-gb/games/final-fantasy-vii-rebirth/"
+        verified = artwork.playstation_url(store_id, "ru-ua")
+        requests = []
+
+        def respond(request):
+            url = str(request.url)
+            requests.append(url)
+            if request.url.path.endswith(package_id):
+                return httpx.Response(302, headers={"Location": f"/en-us/product/{package_id}"})
+            if url == marketing:
+                return httpx.Response(200, text=links)
+            if url == verified:
+                return httpx.Response(200, text=f'<script id="__NEXT_DATA__">{page}</script>')
+            if url == cover:
+                return httpx.Response(200, content=image.getvalue())
+            raise AssertionError(f"Unexpected Store request: {url}")
+
+        client = httpx.Client
+        providers = {"PlayStation Store": True, "IGDB": False, "SteamGridDB": False}
+        with patch.object(artwork.Artwork, "providers", return_value=providers), patch.object(
+            artwork.httpx, "Client", side_effect=lambda **kwargs: client(transport=httpx.MockTransport(respond), **kwargs)
+        ):
+            found = self.client.post("/api/games/1/artwork/search").json()
+            self.assertEqual(found["issues"], [])
+            self.assertEqual([item["url"] for item in found["items"]], [cover, background])
+            chosen = self.client.post("/api/games/1/artwork/select", json={"token": found["items"][0]["token"]})
+            self.assertEqual(chosen.status_code, 200, chosen.text)
+            self.assertEqual(self.client.get(chosen.json()["cover"]).content, image.getvalue())
+            self.assertEqual(self.client.get("/api/games/1/about").json()["url"], verified)
+
+        self.assertEqual(self.initial()["content_id"], package_id)
+        self.assertEqual(requests, [*(artwork.playstation_url(package_id, locale)
+                                      for locale in ("ru-ua", "en-gb", "en-us")),
+                                    marketing, verified, cover, verified])
+
     def test_fih_game_type_and_package_exclusions(self):
         metadata = scanner.parse_metadata(CASTLEVANIA_INFO, Path("Castlevania.pkg"))
         self.assertEqual((metadata["title_id"], metadata["title"], metadata["version"], metadata["firmware"]),

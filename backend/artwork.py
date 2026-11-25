@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import logging
 import os
 import re
 import tempfile
@@ -19,6 +20,7 @@ IMAGE_SUFFIXES = {"PNG": ".png", "JPEG": ".jpg", "WEBP": ".webp"}
 ART_NAME = re.compile(r"[a-f0-9]{64}\.(?:webp|png|jpg)")
 PS_STORE_HOST = "image.api.playstation.com"
 PS_STORE_SOURCE = "PlayStation Store"
+STORE_PRODUCT_SETTING = "store_product:"
 PS_STORE_PRODUCT = re.compile(r"[A-Z]{2}[0-9]{4}-(?:PPSA|CUSA)[0-9]{5}_00-[A-Z0-9]{16}")
 LANGUAGE_PACK = re.compile(
     r"language pack|voice pack|voice[- ]?over pack|audio language|языков\w* пакет|пакет (?:язык\w*|озвучки)|"
@@ -26,6 +28,7 @@ LANGUAGE_PACK = re.compile(
 )
 IMAGE_HOSTS = {"images.igdb.com", "cdn.steamgriddb.com", "cdn2.steamgriddb.com", PS_STORE_HOST}
 ARTWORK_KEYS = ("IGDB_CLIENT_ID", "IGDB_CLIENT_SECRET", "IGDB_ACCESS_TOKEN", "STEAMGRIDDB_API_KEY")
+logger = logging.getLogger(__name__)
 
 
 def store_image(database, content, kind, *, original=False):
@@ -101,6 +104,58 @@ def playstation_locales(content_id):
     return tuple(dict.fromkeys(("ru-ua", preferred, "en-us")))
 
 
+def same_store_title(content_id, candidate):
+    return bool(candidate and PS_STORE_PRODUCT.fullmatch(candidate)
+                and candidate.partition("_")[0] == content_id.partition("_")[0])
+
+
+class PlayStationEditionLinks(HTMLParser):
+    def __init__(self, title, content_id):
+        super().__init__()
+        self.content_id = content_id
+        self.labels = {title, "standard edition", title + " standard edition", "通常版"}
+        self.product = None
+        self.text = []
+        self.matches = set()
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "a":
+            url = urlsplit(dict(attrs).get("href") or "")
+            product = url.path.rstrip("/").rsplit("/", 1)[-1]
+            if (url.scheme == "https" and url.netloc == "store.playstation.com"
+                    and re.fullmatch(r"/[a-z]{2}-[a-z]{2}/product/[^/]+/?", url.path)
+                    and product != self.content_id and same_store_title(self.content_id, product)):
+                self.product = product
+                self.text = []
+
+    def handle_data(self, data):
+        if self.product:
+            self.text.append(data)
+
+    def handle_endtag(self, tag):
+        if tag == "a" and self.product:
+            if comparable(" ".join(self.text)) in self.labels:
+                self.matches.add(self.product)
+            self.product = None
+
+
+def find_store_product(client, title, content_id):
+    name = comparable(title)
+    if not name or name == content_id[7:16].lower():
+        return None
+    locale = {"EP": "en-gb", "JP": "ja-jp", "HP": "en-hk"}.get(content_id[:2], "en-us")
+    slug = quote(name.replace(" ", "-"), safe="-")
+    links = PlayStationEditionLinks(name, content_id)
+    try:
+        page = bounded_get(client, f"https://www.playstation.com/{locale}/games/{slug}/", 4_000_000)
+        links.feed(page.decode("utf-8", errors="replace"))
+        links.close()
+    except (httpx.HTTPError, ValueError) as error:
+        logger.info("PlayStation: поиск страницы для %s не удался (%s)", content_id, type(error).__name__)
+        return None
+    return next(iter(links.matches)) if len(links.matches) == 1 else None
+
+
 def playstation_props(page, content_id=None):
     script = re.search(rb'<script\b[^>]*\bid="__NEXT_DATA__"[^>]*>(.*?)</script>', page, re.S)
     if not script:
@@ -123,27 +178,23 @@ def playstation_slot(props, slot, content_id):
 
 
 def playstation_media(props, content_id, title):
-    for slot in ("media-carousel", "background-image"):
+    role_urls = {}
+    for slot in ("media-carousel", "background-image", "game-title", "upsells"):
         product = playstation_slot(props, slot, content_id)
-        media = product.get("media", [])
-        if not media:
-            continue
-        role_urls = {
-            item.get("role"): item["url"] for item in media
-            if isinstance(item, dict) and item.get("type") == "IMAGE"
-            and isinstance(item.get("url"), str) and image_url(item["url"])
-            and urlsplit(item["url"]).netloc == PS_STORE_HOST
-        }
-        roles = (
-            ("cover", "PORTRAIT_BANNER"), ("cover", "MASTER"),
-            ("background", "GAMEHUB_COVER_ART"), ("background", "SIXTEEN_BY_NINE_BANNER"),
-        )
-        return [
-            {"title": title, "id": f"{content_id}/{role}", "kind": kind,
-             "source": PS_STORE_SOURCE, "url": role_urls[role], "exact": True}
-            for kind, role in roles if role in role_urls
-        ]
-    return []
+        for item in product.get("media") or []:
+            if (isinstance(item, dict) and item.get("type") == "IMAGE"
+                    and isinstance(item.get("url"), str) and image_url(item["url"])
+                    and urlsplit(item["url"]).netloc == PS_STORE_HOST):
+                role_urls.setdefault(item.get("role"), item["url"])
+    roles = (
+        ("cover", "PORTRAIT_BANNER"), ("cover", "MASTER"),
+        ("background", "GAMEHUB_COVER_ART"), ("background", "SIXTEEN_BY_NINE_BANNER"),
+    )
+    return [
+        {"title": title, "id": f"{content_id}/{role}", "kind": kind,
+         "source": PS_STORE_SOURCE, "url": role_urls[role], "exact": True}
+        for kind, role in roles if role in role_urls
+    ]
 
 
 class DescriptionText(HTMLParser):
@@ -345,7 +396,7 @@ def playstation_dlc(client, content_id):
     if source is None:
         if failure:
             raise failure
-        return []
+        return None
     props, locale = source
     items = {(item["kind"], item["id"]): item for item in candidates}
     for item in related_store_dlc(client, props, content_id, locale):
@@ -459,7 +510,10 @@ def playstation_about(client, content_id):
 
 
 class Artwork:
-    def __init__(self, directory=None):
+    def __init__(self, directory=None, *, database=None):
+        self.database = database
+        if database is not None:
+            directory = database.directory
         self.keys_file = directory / "artwork-keys.json" if directory is not None else None
         self.igdb_token = None
 
@@ -570,9 +624,45 @@ class Artwork:
             time.sleep(0.3)
         return result
 
+    def store_lookup(self, client, title, content_id, fetch):
+        setting = STORE_PRODUCT_SETTING + content_id
+        cached = None
+        if self.database is not None:
+            with self.database.connect() as db:
+                row = db.execute("SELECT value FROM settings WHERE key=?", (setting,)).fetchone()
+                if row and same_store_title(content_id, row["value"]):
+                    cached = row["value"]
+        failure = None
+        result = None
+        for product in dict.fromkeys((cached or content_id, content_id)):
+            try:
+                result = fetch(client, product)
+            except httpx.HTTPStatusError as error:
+                if not (error.response.is_redirect or error.response.status_code in (404, 410)):
+                    raise
+                failure = error
+                result = None
+            if result is not None:
+                return result
+
+        alternate = find_store_product(client, title, content_id)
+        if alternate and alternate != cached:
+            result = fetch(client, alternate)
+            if result is not None and self.database is not None:
+                with self.database.connect() as db:
+                    db.execute("INSERT INTO settings VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                               (setting, alternate))
+                logger.info("PlayStation Store: для PKG %s найдена карточка %s", content_id, alternate)
+        if result is None and failure:
+            raise failure
+        return result
+
     def playstation(self, client, title, content_id):
         if not playstation_url(content_id):
             return []
+        return self.store_lookup(client, title, content_id, lambda client, product: self.store_media(client, title, product)) or []
+
+    def store_media(self, client, title, content_id):
         failure = None
         found = False
         for locale in playstation_locales(content_id):
@@ -590,7 +680,7 @@ class Artwork:
                     return candidates
         if not found and failure:
             raise failure
-        return []
+        return [] if found else None
 
     def search(self, title, platform, content_id=None):
         available = self.providers()

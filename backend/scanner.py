@@ -298,7 +298,7 @@ def scan(database, state, stop, publish, *, on_added, force=False):
     if executable is None:
         raise MetadataError("Укажите путь к fpkg-cli в настройках")
 
-    art = Artwork(database.directory)
+    art = Artwork(database=database)
     for root in roots:
         if stop.is_set():
             return
