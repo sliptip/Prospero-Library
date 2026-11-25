@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import type { ChangeEvent, FormEvent, ReactNode } from 'react'
 import { ArrowLeft, Box, Download, ExternalLink, ImagePlus, Info, Pencil, Plus, RefreshCw, Trash2, X } from 'lucide-react'
 import { Cover } from './Library'
-import { api, compatiblePatchText, dateText, dlcLabel, fileLabel, json, localText, patchArchive, patchFirmwareText, patchLabel, sizeText, unknown } from './model'
-import type { ArtCandidate, Dlc, Game, GameAbout, PatchInfo, Platform } from './model'
+import { api, compatiblePatchText, dateText, dlcLabel, fileLabel, json, languageList, localText, patchArchive, patchFirmwareText, patchLabel, russianSupport, sizeText, unknown } from './model'
+import type { ArtCandidate, CustomLocalization, Dlc, Game, GameAbout, PatchInfo, Platform, StoreLocalization } from './model'
 
 export function Dialog({ title, close, children, wide = false }: { title: string; close: () => void; children: ReactNode; wide?: boolean }) {
   const ref = useRef<HTMLDialogElement>(null)
@@ -20,7 +20,13 @@ export function Dialog({ title, close, children, wide = false }: { title: string
 }
 
 const blankDlc: Dlc = { name: '', description: null, content_id: null, status: 'unknown' }
+const blankLocalization: CustomLocalization = { source: null, interface: null, subtitles: null, audio: null }
+const customLanguageFields = [
+  ['interface', 'Языки интерфейса'], ['subtitles', 'Языки субтитров'], ['audio', 'Языки озвучки'],
+] as const
 const enumBool = (value?: boolean | null) => value === true ? 'yes' : value === false ? 'no' : ''
+const optionalBool = (value: string) => value === '' ? null : value === 'yes'
+const languageOption = (value: boolean | null) => value === null ? 'Не указано' : value ? 'Авто · Есть' : 'Авто · Нет'
 
 export function GameEditor({ game, close, save }: { game?: Game; close: () => void; save: (game: Game) => void }) {
   const [platform, setPlatform] = useState<Platform>(game?.platform || 'PS5')
@@ -31,6 +37,13 @@ export function GameEditor({ game, close, save }: { game?: Game; close: () => vo
   }
   const [fields, setFields] = useState(savedFields)
   const [dlc, setDlc] = useState<Dlc[]>(game?.dlc || [])
+  const [custom, setCustom] = useState<CustomLocalization[]>(game?.custom_localizations || [])
+  const [ruText, setRuText] = useState(enumBool(game?.ru_text))
+  const [ruAudio, setRuAudio] = useState(enumBool(game?.ru_audio))
+  const [localizationSource, setLocalizationSource] = useState(game?.localization_source || '')
+  const store = game?.official_localization
+  const automatic = russianSupport(store)
+  const russian = russianSupport(store, custom, optionalBool(ruText), optionalBool(ruAudio))
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const locked = (name: string) => !editPackage && !!game?.package_fields.includes(name)
@@ -41,6 +54,9 @@ export function GameEditor({ game, close, save }: { game?: Game; close: () => vo
     readOnly: locked(name),
     onChange: (event: ChangeEvent<HTMLInputElement>) => setFields({ ...fields, [name]: event.target.value }),
   })
+  function updateLocalization(index: number, key: keyof CustomLocalization, value: string) {
+    setCustom(groups => groups.map((group, i) => i === index ? { ...group, [key]: value } : group))
+  }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -48,14 +64,15 @@ export function GameEditor({ game, close, save }: { game?: Game; close: () => vo
     setBusy(true)
     const data = new FormData(event.currentTarget)
     const value = (key: string) => String(data.get(key) || '').trim() || null
-    const bool = (key: string) => value(key) === null ? null : value(key) === 'yes'
     const body = {
       title: value('title'), platform: shownPlatform, title_id: value('title_id')?.toUpperCase(),
       edit_pkg_fields: game?.package_identity ? editPackage : undefined,
       version: value('version'), firmware: value('firmware'), edition: value('edition'),
       size_bytes: value('size_bytes') ? Number(value('size_bytes')) : null, release_date: value('release_date'),
-      ru_text: bool('ru_text'), ru_audio: bool('ru_audio'), text_languages: value('text_languages'),
-      audio_languages: value('audio_languages'), localization_source: value('localization_source'),
+      ru_text: optionalBool(ruText), ru_audio: optionalBool(ruAudio), text_languages: value('text_languages'),
+      audio_languages: value('audio_languages'),
+      localization_source: localizationSource.trim() || null,
+      custom_localizations: custom,
       notes: value('notes'),
       dlc: dlc.map(item => ({ ...item, name: item.name.trim(), description: item.description?.trim() || null })),
     }
@@ -84,12 +101,40 @@ export function GameEditor({ game, close, save }: { game?: Game; close: () => vo
         <label className="field">Требуемая прошивка игры<input {...input('firmware')} placeholder="13.40" /></label>
         <label className="field">Размер в байтах<input {...input('size_bytes')} type="number" min="1" step="1" /></label>
         <span />
-        {(['ru_text', 'ru_audio'] as const).map((key, index) => <label key={key} className="field">{index === 0 ? 'Русский текст' : 'Русская озвучка'}
-          <select name={key} defaultValue={enumBool(game?.[key])}><option value="">Не указано</option><option value="yes">Есть</option><option value="no">Нет</option></select>
+        {([
+          ['Русский текст', ruText, setRuText, automatic.ruText], ['Русская озвучка', ruAudio, setRuAudio, automatic.ruAudio],
+        ] as const).map(([label, value, change, detected]) => <label key={label} className="field">{label}
+          <select value={value} onChange={event => change(event.target.value)}>
+            <option value="">{languageOption(detected)}</option><option value="yes">Есть</option><option value="no">Нет</option>
+          </select>
         </label>)}
-        <label className="field">Языки интерфейса и субтитров<input name="text_languages" maxLength={512} defaultValue={game?.text_languages || ''} /></label>
-        <label className="field">Языки озвучки<input name="audio_languages" maxLength={512} defaultValue={game?.audio_languages || ''} /></label>
-        <label className="field span-two">Источник русификации<input name="localization_source" maxLength={512} defaultValue={game?.localization_source || ''} /></label>
+        <label className="field">Языки интерфейса и субтитров<input name="text_languages" maxLength={512}
+          defaultValue={game?.text_languages || ''} placeholder={languageList(store?.screen)} /></label>
+        <label className="field">Языки озвучки<input name="audio_languages" maxLength={512}
+          defaultValue={game?.audio_languages || ''} placeholder={languageList(store?.audio)} /></label>
+        {(russian.ruText || russian.ruAudio) && <label className="field span-two">Источник русификации
+          <input maxLength={512} value={localizationSource} placeholder={russian.source || undefined}
+            onChange={event => setLocalizationSource(event.target.value)} />
+        </label>}
+        <div className="span-two localization-editor">
+          <div className="section-heading"><h3>Дополнительные локализации</h3>
+            <button className="button outlined compact" type="button" onClick={() => setCustom([...custom, { ...blankLocalization }])}>
+              <Plus size={15} /> Добавить локализацию
+            </button>
+          </div>
+          {custom.map((group, index) => <div className="localization-form" key={index}>
+            <div className="section-heading">
+              <label className="field">Название или автор<input maxLength={512} value={group.source || ''}
+                placeholder="Например, команда перевода" onChange={event => updateLocalization(index, 'source', event.target.value)} /></label>
+              <button className="icon-button" type="button" aria-label="Удалить локализацию"
+                onClick={() => setCustom(custom.filter((_, i) => i !== index))}><X size={18} /></button>
+            </div>
+            {customLanguageFields.map(([key, label]) => <label className="field" key={key}>{label}
+              <input maxLength={512} value={group[key] || ''} placeholder="Через запятую"
+                onChange={event => updateLocalization(index, key, event.target.value)} />
+            </label>)}
+          </div>)}
+        </div>
         <label className="field span-two">Примечания<textarea name="notes" rows={3} maxLength={12000} defaultValue={game?.notes || ''} /></label>
         <div className="span-two dlc-editor">
           <div className="section-heading"><h3>Дополнения</h3><button className="button outlined compact" type="button" onClick={() => setDlc([...dlc, { ...blankDlc }])} disabled={dlc.length >= 100}><Plus size={15} /> Добавить DLC</button></div>
@@ -146,8 +191,9 @@ function AboutGameDialog({ about, close, retry }: { about: AboutState; close: ()
   </Dialog>
 }
 
-export function GamePage({ game, back, edit, art, updates, updating, removed }: {
+export function GamePage({ game, back, edit, art, updates, updating, removed, onLocalization }: {
   game: Game; back: () => void; edit: () => void; art: () => void; updates: () => void; updating: boolean; removed: () => void;
+  onLocalization: (id: number, contentId: string, localization: StoreLocalization) => void;
 }) {
   const [remove, setRemove] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -157,21 +203,27 @@ export function GamePage({ game, back, edit, art, updates, updating, removed }: 
   const [aboutAttempt, setAboutAttempt] = useState(0)
   const store = about.status === 'ready' ? about.game : null
   const release = game.release_date || store?.release_date
+  const languages = game.official_localization
+  const russian = russianSupport(languages, game.custom_localizations, game.ru_text, game.ru_audio)
+  const source = (russian.ruText || russian.ruAudio) && (game.localization_source || russian.source)
 
   useEffect(() => {
-    if (!game.content_id) {
+    const { id, content_id: contentId } = game
+    if (!contentId) {
       setAbout({ status: 'ready', game: null })
       return
     }
     const request = new AbortController()
     setAbout({ status: 'loading' })
-    void api<GameAbout | null>(`/games/${game.id}/about`, { signal: request.signal }).then(data => {
-      if (!request.signal.aborted) setAbout({ status: 'ready', game: data })
+    void api<GameAbout | null>(`/games/${id}/about`, { signal: request.signal }).then(data => {
+      if (request.signal.aborted) return
+      if (data?.localization) onLocalization(id, contentId, data.localization)
+      setAbout({ status: 'ready', game: data })
     }).catch(error => {
       if (!request.signal.aborted) setAbout({ status: 'error', message: String((error as Error).message) })
     })
     return () => request.abort()
-  }, [game.id, game.content_id, aboutAttempt])
+  }, [game.id, game.content_id, aboutAttempt, onLocalization])
 
   async function removeGame() {
     setBusy(true)
@@ -252,11 +304,16 @@ export function GamePage({ game, back, edit, art, updates, updating, removed }: 
       <section className="panel">
         <h2>Локализация</h2>
         <dl className="meta-grid">
-          <Meta name="Русский язык">{localText(game.ru_text, game.ru_audio)}</Meta>
-          <Meta name="Источник русификации">{game.localization_source}</Meta>
-          <Meta name="Интерфейс и субтитры">{game.text_languages}</Meta>
-          <Meta name="Озвучка">{game.audio_languages}</Meta>
+          <Meta name="Русский язык">{localText(russian.ruText, russian.ruAudio)}</Meta>
+          {source && <Meta name="Источник русификации">{source}</Meta>}
+          <Meta name="Интерфейс и субтитры">{game.text_languages || languageList(languages?.screen)}</Meta>
+          <Meta name="Озвучка">{game.audio_languages || languageList(languages?.audio)}</Meta>
         </dl>
+        {game.custom_localizations.map((group, index) => <div className="localization-group" key={index}>
+          <h3>{group.source || 'Дополнительная локализация'}</h3>
+          <dl className="meta-grid">{customLanguageFields.map(([key, label]) =>
+            group[key] && <Meta key={key} name={label}>{group[key]}</Meta>)}</dl>
+        </div>)}
       </section>
       <section className="panel"><h2>Примечания</h2><p className="notes">{game.notes || 'Пока пусто'}</p></section>
     </div>

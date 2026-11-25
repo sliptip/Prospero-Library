@@ -4,7 +4,7 @@ import { ArtworkDialog, GameEditor, GamePage } from './Game'
 import { Library } from './Library'
 import { JobDialog, JournalDialog, SettingsPage, Updates } from './Management'
 import { api, json } from './model'
-import type { Game, Job } from './model'
+import type { Game, Job, StoreLocalization } from './model'
 
 function active(job: Job | null) {
   return job?.status === 'running' || job?.status === 'cancelling'
@@ -32,6 +32,10 @@ export function App() {
   const refresh = useCallback(async () => {
     setGames(await api<Game[]>('/games'))
     setReady(true)
+  }, [])
+  const saveLocalization = useCallback((id: number, contentId: string, localization: StoreLocalization) => {
+    setGames(items => items.map(game => game.id === id && game.content_id === contentId
+      ? { ...game, official_localization: localization } : game))
   }, [])
 
   const navigate = useCallback((path: string, clear = false) => {
@@ -151,6 +155,7 @@ export function App() {
         {!ready && !error && <p className="muted" role="status">Загружаю библиотеку…</p>}
         {ready && home && <Library games={games} query={query} open={game => showGame(game.id)} add={() => setMode('new')} swap={swapGames} />}
         {ready && current && <GamePage key={current.id} game={current} back={() => navigate('/')} edit={() => setMode('edit')}
+          onLocalization={saveLocalization}
           art={() => setMode('art')} updating={updating} updates={() => void start('/updates?game_id=' + current.id)}
           removed={() => { setGames(items => items.filter(game => game.id !== current.id)); navigate('/', true); setNotice('Карточка удалена') }} />}
         {ready && detail && !current && <div className="empty-state"><Gamepad2 size={28} /><p>Карточка не найдена</p>

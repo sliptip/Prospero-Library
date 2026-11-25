@@ -200,6 +200,26 @@ def description_text(descriptions):
     return None
 
 
+def store_languages(info, field, platform):
+    by_platform = info.get(field + "ByPlatform") or []
+    codes = next((row[field] for row in by_platform if isinstance(row, dict)
+                  and row.get("platform") == platform and isinstance(row.get(field), list) and row[field]), None)
+    if codes is None and (not info.get("platforms") or info["platforms"] == [platform]):
+        codes = info.get(field)
+    if not isinstance(codes, list):
+        return None
+    aliases = {"ch": "zh-Hant", "zh": "zh-Hans"}
+    normalized = list(dict.fromkeys(aliases.get(code.lower(), code.replace("_", "-")) for code in codes
+                                   if isinstance(code, str) and re.fullmatch(r"[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{2,8})*", code)))
+    return normalized or None
+
+
+def prefer_languages(about, metadata):
+    if metadata:
+        for key, languages in metadata["localization"].items():
+            about["localization"][key] = languages or about["localization"][key]
+
+
 def playstation_details(props, content_id, locale):
     info = playstation_slot(props, "info", content_id)
     title = playstation_slot(props, "game-title", content_id)
@@ -223,10 +243,15 @@ def playstation_details(props, content_id, locale):
     actual_locale = props.get("locale") or locale
     russian = actual_locale.startswith("ru-") and bool(description and
                   len(re.findall("[А-Яа-яЁё]", description)) > len(re.findall("[A-Za-z]", description)))
+    platform = "PS5" if "-PPSA" in content_id else "PS4"
     return {
         "description": description, "language": "ru" if russian else "en",
         "publisher": publisher if isinstance(publisher, str) else None, "genres": genres,
         "release_date": release_date, "players": players,
+        "localization": {
+            "screen": store_languages(info, "screenLanguages", platform) or store_languages(title, "screenLanguages", platform),
+            "audio": store_languages(info, "spokenLanguages", platform) or store_languages(title, "spokenLanguages", platform),
+        },
         "url": playstation_url(content_id, actual_locale if actual_locale in ("ru-ua", "en-us") else locale),
     }
 
@@ -253,6 +278,8 @@ def russian_concept(client, product_props, content_id):
     result = playstation_details(props, localized_id, "ru-ua")
     if result and result["language"] == "ru":
         result["url"] = url
+        if localized_id != content_id:
+            result["localization"] = {"screen": None, "audio": None}
         return result
     return None
 
@@ -284,11 +311,14 @@ def playstation_about(client, content_id):
             if localized:
                 for key in ("release_date", "players"):
                     localized[key] = about[key] or localized[key]
+                prefer_languages(localized, about)
+                prefer_languages(localized, metadata)
                 return localized
         if about["description"]:
             if metadata:
                 for key in ("publisher", "genres", "release_date", "players"):
                     about[key] = metadata[key] or about[key]
+                prefer_languages(about, metadata)
             return about
         metadata = metadata or about
     if metadata is None and failure:

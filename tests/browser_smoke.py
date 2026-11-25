@@ -1,5 +1,6 @@
 """Exercise the built app in Chromium against a real temporary SQLite database."""
 import argparse
+import json
 import os
 import re
 import socket
@@ -123,10 +124,15 @@ def run(screenshots, browser_executable):
 
             def store_about(route):
                 about_requests.append(route.request.url)
-                route.fulfill(json={"description": "Первый абзац.\n\nВторой абзац.", "language": "ru",
-                                    "publisher": "KONAMI", "genres": ["Ролевые игры", "Боевики"],
-                                    "release_date": "2026-10-15", "players": "1",
-                                    "url": "https://store.playstation.com/ru-ua/product/JP0101-PPSA35399_00-CVBCAPP000000000"})
+                content_id = "JP0101-PPSA35399_00-CVBCAPP000000000"
+                details = {"description": "Первый абзац.\n\nВторой абзац.", "language": "ru",
+                           "publisher": "KONAMI", "genres": ["Ролевые игры", "Боевики"],
+                           "release_date": "2026-10-15", "players": "1",
+                           "localization": {"screen": ["en", "ja", "ru"], "audio": ["en", "ja"]},
+                           "url": f"https://store.playstation.com/ru-ua/product/{content_id}"}
+                with sqlite3.connect(directory / "data" / "library.db") as db:
+                    db.execute("INSERT OR REPLACE INTO store_about VALUES (?,?,?)", (content_id, "ru", json.dumps(details)))
+                route.fulfill(json=details)
 
             page.route("**/api/games/1/about", store_about)
             page.get_by_role("button", name="Открыть карточку").click()
@@ -134,6 +140,9 @@ def run(screenshots, browser_executable):
             expect(page.get_by_text("01.000.000", exact=True)).to_be_visible()
             expect(page.get_by_text("Preorder Alucard Skin DLC", exact=True)).to_be_visible()
             expect(page.get_by_text("Совместимый патч", exact=False)).to_have_count(0)
+            expect(page.get_by_text("Официальная", exact=True)).to_be_visible()
+            expect(page.get_by_text("Английский, Японский", exact=True)).to_be_visible()
+            expect(page.get_by_text("Английский, Японский, Русский", exact=True)).to_be_visible()
             header = page.locator(".detail-hero")
             expect(header.get_by_text("Ролевые игры", exact=True)).to_be_visible()
             expect(header.get_by_text("KONAMI", exact=True)).to_be_visible()
@@ -193,9 +202,24 @@ def run(screenshots, browser_executable):
             expect(version).to_have_value("01.000.000")
             checkbox.check()
             page.get_by_role("textbox", name="Примечания").fill("Проверка сохранения в SQLite")
+            editor = page.get_by_role("dialog", name="Редактировать карточку")
+            expect(editor.get_by_role("combobox", name="Русский текст").locator("option:checked")).to_have_text("Авто · Есть")
+            editor.get_by_role("button", name="Добавить локализацию").click()
+            editor.get_by_role("button", name="Добавить локализацию").click()
+            groups = editor.locator(".localization-form")
+            groups.first.get_by_role("textbox", name="Название или автор").fill("Фанатская озвучка")
+            groups.first.get_by_role("textbox", name="Языки озвучки").fill("Русский")
+            groups.last.get_by_role("textbox", name="Название или автор").fill("Отдельный перевод")
+            groups.last.get_by_role("textbox", name="Языки субтитров").fill("Украинский")
+            page.set_viewport_size({"width": 390, "height": 844})
+            assert editor.evaluate("el => el.scrollWidth <= el.clientWidth")
+            page.set_viewport_size({"width": 1440, "height": 1000})
             page.get_by_role("dialog").get_by_role("button", name="Сохранить", exact=True).click()
             expect(page.get_by_text("Проверка сохранения в SQLite")).to_be_visible()
             expect(page.get_by_text("01.000.001", exact=True)).to_be_visible()
+            expect(page.get_by_text("Официальная (текст)", exact=True)).to_be_visible()
+            expect(page.get_by_role("heading", name="Фанатская озвучка")).to_be_visible()
+            expect(page.get_by_role("heading", name="Отдельный перевод")).to_be_visible()
 
             page.get_by_role("button", name="Оформление").click()
             upload = page.get_by_label("Загрузить обложку")
@@ -222,7 +246,15 @@ def run(screenshots, browser_executable):
             page.get_by_role("dialog").get_by_role("button", name="Сохранить", exact=True).click()
             expect(page.get_by_role("heading", name="Тестовая карточка")).to_be_visible()
             expect(page.get_by_role("button", name="Об игре")).to_have_count(0)
+            expect(page.get_by_text("Источник русификации")).to_have_count(0)
             page.get_by_role("link", name="Библиотека").click()
+            page.get_by_role("button", name="Фильтры", exact=True).click()
+            page.get_by_label("Русский текст").check()
+            page.get_by_label("Русская озвучка").check()
+            expect(page.locator(".game-tile strong")).to_contain_text("Castlevania")
+            expect(page.locator(".game-tile")).to_have_count(1)
+            page.get_by_role("button", name="Сбросить").click()
+            page.get_by_role("button", name="Закрыть фильтры").click()
             page.get_by_label("Сортировка").select_option("manual")
             tiles = page.locator(".game-tile")
             tile_titles = tiles.locator("strong")
@@ -260,6 +292,8 @@ def run(screenshots, browser_executable):
             expect(page.locator(".game-tile strong").first).to_have_text("Тестовая карточка")
             page.goto(restarted + "/games/1", wait_until="networkidle")
             expect(page.get_by_text("Проверка сохранения в SQLite")).to_be_visible()
+            expect(page.get_by_role("heading", name="Фанатская озвучка")).to_be_visible()
+            expect(page.get_by_text("Официальная (текст)", exact=True)).to_be_visible()
             expect(page.locator(".detail-title .cover img")).to_have_attribute("src", re.compile("/media/"))
             page.get_by_role("link", name="Настройки").click()
             page.get_by_role("button", name="Восстановить", exact=True).click()

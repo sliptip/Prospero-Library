@@ -8,7 +8,7 @@ from threading import RLock
 BASE = Path(__file__).resolve().parent.parent
 DEFAULT_DATA = Path(os.getenv("LOCALAPPDATA", Path.home() / ".local" / "share")) / "Prospero Library"
 APP_ID = 1347571527
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 SCHEMA = """
 CREATE TABLE games (
     id INTEGER PRIMARY KEY, platform TEXT NOT NULL, title_id TEXT NOT NULL,
@@ -56,7 +56,18 @@ CREATE TABLE store_about (
     content_id TEXT PRIMARY KEY, language TEXT NOT NULL CHECK (language IN ('ru', 'en')), details TEXT NOT NULL
 );
 """
-SCHEMAS = {1: SCHEMA, 2: SCHEMA + STORE_ABOUT_SCHEMA}
+CUSTOM_LOCALIZATION_SCHEMA = """
+CREATE TABLE custom_localizations (
+    id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+    source TEXT, interface TEXT, subtitles TEXT, audio TEXT
+);
+"""
+CUSTOM_LOCALIZATION_INDEX = "CREATE INDEX custom_localizations_by_game ON custom_localizations(game_id);"
+SCHEMAS = {
+    1: SCHEMA,
+    2: SCHEMA + STORE_ABOUT_SCHEMA,
+    3: SCHEMA + STORE_ABOUT_SCHEMA + CUSTOM_LOCALIZATION_SCHEMA + CUSTOM_LOCALIZATION_INDEX,
+}
 
 
 def now():
@@ -64,10 +75,13 @@ def now():
 
 
 def upgrade(db, version):
-    if version == 1:
+    if version < SCHEMA_VERSION:
         db.execute("BEGIN IMMEDIATE")
-        db.execute(STORE_ABOUT_SCHEMA)
-        db.execute("PRAGMA user_version = 2")
+        if version == 1:
+            db.execute(STORE_ABOUT_SCHEMA)
+        db.execute(CUSTOM_LOCALIZATION_SCHEMA)
+        db.execute(CUSTOM_LOCALIZATION_INDEX)
+        db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 
 class Database:

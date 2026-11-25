@@ -1,6 +1,8 @@
 export type Platform = 'PS4' | 'PS5'
 export type DlcStatus = 'configured' | 'verified' | 'unknown' | 'absent'
 export type Dlc = { name: string; description: string | null; content_id: string | null; status: DlcStatus }
+export type StoreLocalization = { screen: string[] | null; audio: string[] | null }
+export type CustomLocalization = { source: string | null; interface: string | null; subtitles: string | null; audio: string | null }
 export type Patch = { version: string; firmware: string | null; source: string; checked_at: string; size_bytes: number | null }
 export type PatchState = 'unknown' | 'available' | 'current' | 'error'
 export type PatchInfo = {
@@ -13,6 +15,7 @@ export type Game = {
   version: string | null; firmware: string | null; size_bytes: number | null; release_date: string | null;
   added_at: string; ru_text: boolean | null; ru_audio: boolean | null;
   text_languages: string | null; audio_languages: string | null; localization_source: string | null;
+  official_localization: StoreLocalization | null; custom_localizations: CustomLocalization[];
   notes: string | null; manifest_uri: string | null; version_uri: string | null; dlc: Dlc[]; patch: PatchInfo; cover: string | null; background: string | null;
   cover_source: string | null; background_source: string | null; file_state: 'online' | 'offline' | 'unlinked';
   package_fields: string[]; package_identity: { platform: Platform; title_id: string } | null; content_id: string | null;
@@ -20,6 +23,7 @@ export type Game = {
 export type GameAbout = {
   description: string | null; language: 'ru' | 'en'; publisher: string | null; genres: string[];
   release_date: string | null; players: string | null; url: string;
+  localization?: StoreLocalization;
 }
 export type Root = { id: number; path: string; state: 'offline' | 'online' | 'unknown' | 'partial' }
 export type Settings = { cli_path: string; cli_local: boolean; ps4_firmware: string; ps5_firmware: string; roots: Root[]; providers: Record<string, boolean> }
@@ -83,6 +87,40 @@ export function localText(text: boolean | null, audio: boolean | null) {
   if (audio) return 'Русская озвучка'
   if (text === false && audio === false) return 'Без локализации'
   return 'Не указано'
+}
+
+const languageNames = new Intl.DisplayNames(['ru'], { type: 'language', languageDisplay: 'standard' })
+
+export function languageList(codes?: string[] | null) {
+  return codes?.map(code => {
+    let name = code
+    try { name = languageNames.of(code) || code } catch { /* Keep the original code. */ }
+    return name.charAt(0).toLocaleUpperCase('ru') + name.slice(1)
+  }).join(', ') || ''
+}
+
+function storeRussian(codes?: string[] | null) {
+  return codes?.length ? codes.some(code => code.split('-')[0].toLowerCase() === 'ru') : null
+}
+
+function customRussian(languages: string | null) {
+  return languages?.split(/[,;/]/).some(language =>
+    /^(?:ru(?:[-_]ru)?|russian|русск(?:ий|ая|ое|ие))(?=$|[^\p{L}\p{N}_-])/iu.test(language.trim()))
+}
+
+export function russianSupport(
+  store?: StoreLocalization | null, groups: CustomLocalization[] = [], text?: boolean | null, audio?: boolean | null,
+) {
+  const storeText = storeRussian(store?.screen)
+  const storeAudio = storeRussian(store?.audio)
+  const ruText = groups.some(group => customRussian(group.interface) || customRussian(group.subtitles)) || (text ?? storeText)
+  const ruAudio = groups.some(group => customRussian(group.audio)) || (audio ?? storeAudio)
+  const officialText = text !== false && storeText
+  const officialAudio = audio !== false && storeAudio
+  const source = officialText && ruAudio && !officialAudio ? 'Официальная (текст)'
+    : officialAudio && ruText && !officialText ? 'Официальная (озвучка)'
+    : officialText || officialAudio ? 'Официальная' : null
+  return { ruText, ruAudio, source }
 }
 
 export function stored<T>(key: string, fallback: T): T {

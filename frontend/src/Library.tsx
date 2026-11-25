@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { ArrowDownUp, ArrowRight, ChevronDown, Gamepad2, Grid2X2, GripVertical, LibraryBig, List, Plus, SlidersHorizontal, X } from 'lucide-react'
-import { Game, gameCount, sizeText, stored } from './model'
+import { Game, gameCount, russianSupport, sizeText, stored } from './model'
 
 type Props = { games: Game[]; query: string; open: (game: Game) => void; add: () => void; swap: (source: number, target: number) => Promise<void> }
 type Sort = 'added_at' | 'title' | 'release_date' | 'size_bytes' | 'update' | 'manual'
@@ -59,11 +59,16 @@ export function Library({ games, query, open, add, swap }: Props) {
   const search = matchText(query.trim())
   const recent = games.toSorted((a, b) => b.added_at.localeCompare(a.added_at))[0]
   const activeFilters = Object.values(filters).filter(Boolean).length
+  function matchesLanguages(game: Game) {
+    if (!filters.ru_text && !filters.ru_audio) return true
+    const { ruText, ruAudio } = russianSupport(game.official_localization, game.custom_localizations, game.ru_text, game.ru_audio)
+    return (!filters.ru_text || ruText) && (!filters.ru_audio || ruAudio)
+  }
   const filtered = games.filter(game => (
     (!search || matchText(game.title + ' ' + game.title_id).includes(search)) &&
     (platform === 'all' || game.platform === platform) &&
     (!filters.dlc || game.dlc.some(item => item.status === 'verified' || item.status === 'configured')) &&
-    (!filters.ru_text || game.ru_text) && (!filters.ru_audio || game.ru_audio) &&
+    matchesLanguages(game) &&
     (!filters.update || game.patch.state === 'available')
   )).sort((a, b) => {
     if (sort === 'manual') return 0

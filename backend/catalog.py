@@ -21,6 +21,14 @@ class DLC(BaseModel):
     content_id: str | None = Field(default=None, max_length=80)
 
 
+class CustomLocalization(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    source: str | None = Field(default=None, max_length=512)
+    interface: str | None = Field(default=None, max_length=512)
+    subtitles: str | None = Field(default=None, max_length=512)
+    audio: str | None = Field(default=None, max_length=512)
+
+
 class GameInput(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     title: Name
@@ -36,6 +44,7 @@ class GameInput(BaseModel):
     text_languages: str | None = Field(default=None, max_length=512)
     audio_languages: str | None = Field(default=None, max_length=512)
     localization_source: str | None = Field(default=None, max_length=512)
+    custom_localizations: list[CustomLocalization] | None = None
     notes: str | None = Field(default=None, max_length=12000)
     dlc: list[DLC] = Field(default_factory=list, max_length=100)
     official_version: Version | None = None
@@ -191,6 +200,12 @@ def library(db, game_id=None):
         game["manifest_uri"] = manual.get("version_uri")
         game["version_uri"] = game["manifest_uri"] or imported.get("version_uri") or defaults.get("version_uri")
         game["content_id"] = imported.get("content_id") or defaults.get("content_id")
+        localization = db.execute("SELECT json_extract(details, '$.localization') FROM store_about WHERE content_id=?",
+                                  (game["content_id"],)).fetchone() if game["content_id"] else None
+        game["official_localization"] = json.loads(localization[0]) if localization and localization[0] else None
+        game["custom_localizations"] = [dict(row) for row in db.execute(
+            "SELECT source,interface,subtitles,audio FROM custom_localizations WHERE game_id=? ORDER BY id", (game["id"],),
+        )]
         file_build = build if build.get("linked") else imported
         game["file_state"] = "online" if file_build.get("online") else "offline" if file_build.get("linked") else "unlinked"
         game["dlc"] = [dict(row) for row in db.execute(
@@ -246,6 +261,14 @@ def save_game(db, item, game_id=None):
         db.executemany("INSERT INTO dlc (game_id,name,description,status,content_id) VALUES (?,?,?,?,?)", [
             (game_id, row.name, row.description, row.status, row.content_id) for row in item.dlc
         ])
+    if values["custom_localizations"] is not None:
+        groups = [{key: value or None for key, value in row.items()}
+                  for row in values["custom_localizations"] if any(row.values())]
+        if groups != existing.get("custom_localizations", []):
+            db.execute("DELETE FROM custom_localizations WHERE game_id=?", (game_id,))
+            db.executemany("INSERT INTO custom_localizations(game_id,source,interface,subtitles,audio) VALUES (?,?,?,?,?)", [
+                (game_id, row["source"], row["interface"], row["subtitles"], row["audio"]) for row in groups
+            ])
     if "official_version" in item.model_fields_set:
         db.execute("DELETE FROM patch_history WHERE game_id=? AND source='Вручную'", (game_id,))
         if item.official_version:

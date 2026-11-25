@@ -118,6 +118,11 @@ class LocalCatalogTest(unittest.TestCase):
         content_id = self.initial()["content_id"]
         product = {"id": content_id, "publisherName": "Publisher", "localizedGenres": [{"value": "Боевики"}],
                    "releaseDate": "2026-10-15T00:00:00Z",
+                   "platforms": ["PS4", "PS5"], "screenLanguages": ["en", "ja"],
+                   "screenLanguagesByPlatform": [{"platform": "PS4", "screenLanguages": ["ja"]},
+                                                 {"platform": "PS5", "screenLanguages": ["ru", "pt_BR", "ch", "zh"]}],
+                   "spokenLanguagesByPlatform": [{"platform": "PS4", "spokenLanguages": ["ru"]},
+                                                 {"platform": "PS5", "spokenLanguages": ["en", "ja"]}],
                    "descriptions": [{"type": "SHORT", "value": "Краткое описание"},
                                     {"type": "LONG", "value": "<p>Вступление &amp; сюжет</p><h3>Особенности</h3>"
                                                                "<ul><li>Первый пункт</li><li>Второй пункт</li></ul>"
@@ -140,12 +145,15 @@ class LocalCatalogTest(unittest.TestCase):
             return httpx.Response(200, content=page)
 
         store_client = httpx.Client(transport=httpx.MockTransport(store))
+        languages = {"screen": ["ru", "pt-BR", "zh-Hant", "zh-Hans"], "audio": ["en", "ja"]}
         with patch("backend.main.httpx.Client", return_value=store_client):
             response = self.client.get("/api/games/1/about")
             self.assertEqual(response.status_code, 200, response.text)
             self.assertEqual(response.json(), {"description": "Вступление & сюжет\n\nОсобенности\n\n• Первый пункт\n• Второй пункт",
                                                "language": "ru", "publisher": "Publisher", "genres": ["Боевики"],
-                                               "release_date": "2026-10-15", "players": "1-2", "url": url})
+                                               "release_date": "2026-10-15", "players": "1-2", "url": url,
+                                               "localization": languages})
+            self.assertEqual(self.initial()["official_localization"], languages)
             manual = self.client.post("/api/games", json={"title": "Manual", "platform": "PS5", "title_id": "PPSA12345"}).json()
             self.assertIsNone(self.client.get(f"/api/games/{manual['id']}/about").json())
         self.assertEqual(requests, [url])
@@ -180,6 +188,7 @@ class LocalCatalogTest(unittest.TestCase):
         self.assertEqual(result.status_code, 200, result.text)
         self.assertEqual(result.json()["language"], "en")
         self.assertEqual(result.json()["description"], "Official English description")
+        self.assertEqual(result.json()["localization"], {"screen": None, "audio": None})
         self.assertEqual(requests, [f"/ru-ua/product/{content_id}", f"/en-us/product/{content_id}"])
 
     def test_game_about_finds_a_russian_edition_of_the_same_concept(self):
@@ -195,8 +204,10 @@ class LocalCatalogTest(unittest.TestCase):
             return f'<script id="__NEXT_DATA__">{payload}</script>'.encode()
 
         english = {"id": content_id, "releaseDate": "2026-10-15", "concept": {"__ref": concept_key},
+                   "spokenLanguages": ["en"],
                    "descriptions": [{"type": "LONG", "value": "English description"}]}
         localized = {"id": localized_id, "releaseDate": "2026-10-14", "localizedGenres": [{"value": "Боевики"}],
+                     "spokenLanguages": ["ru"], "screenLanguages": ["ru"],
                      "descriptions": [{"type": "LONG", "value": "Официальное описание на русском"}]}
         requests = []
 
@@ -217,7 +228,42 @@ class LocalCatalogTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["language"], "ru")
         self.assertEqual(response.json()["release_date"], "2026-10-15")
+        self.assertEqual(response.json()["localization"], {"screen": None, "audio": ["en"]})
         self.assertEqual(requests, [f"/ru-ua/product/{content_id}", f"/en-us/product/{content_id}", "/ru-ua/concept/227770"])
+
+    def test_legacy_store_cache_survives_offline_and_picks_up_languages(self):
+        content_id = self.initial()["content_id"]
+        saved = {"language": "ru", "description": "Русское описание в базе"}
+        with sqlite3.connect(self.data / "library.db") as db:
+            db.execute("INSERT INTO store_about VALUES (?,?,?)", (content_id, "ru", json.dumps(saved)))
+        offline = httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(503)))
+        with patch("backend.main.httpx.Client", return_value=offline):
+            self.assertEqual(self.client.get("/api/games/1/about").json(), saved)
+        languages = {"screen": ["ru", "en"], "audio": ["ja"]}
+        with patch("backend.main.httpx.Client"), \
+                patch("backend.main.playstation_about", return_value={"language": "en", "localization": languages}):
+            self.assertEqual(self.client.get("/api/games/1/about").json(), {**saved, "localization": languages})
+        self.assertEqual(self.initial()["official_localization"], languages)
+
+    def test_custom_localization_groups_survive_unrelated_edits_and_backup(self):
+        groups = [{"source": "Команда перевода", "interface": None, "subtitles": "Русский", "audio": None},
+                  {"source": None, "interface": None, "subtitles": None, "audio": "Русский, Украинский"}]
+        initial = self.initial()
+        updated = self.client.put("/api/games/1", json=game_body(initial, custom_localizations=[*groups, {}]))
+        self.assertEqual(updated.status_code, 200, updated.text)
+        self.assertEqual(updated.json()["custom_localizations"], groups)
+        unrelated_edit = game_body(initial, notes="Правка примечаний")
+        unrelated_edit.pop("custom_localizations")
+        saved = self.client.put("/api/games/1", json=unrelated_edit)
+        self.assertEqual(saved.json()["custom_localizations"], groups)
+        backup = self.client.post("/api/backups").json()["name"]
+        cleared = self.client.put("/api/games/1", json=game_body(initial, custom_localizations=[]))
+        self.assertEqual(cleared.json()["custom_localizations"], [])
+        self.assertEqual(self.client.post("/api/backups/restore", json={"name": backup}).status_code, 200)
+        self.assertEqual(self.initial()["custom_localizations"], groups)
+        self.assertEqual(self.client.delete("/api/games/1").status_code, 200)
+        with sqlite3.connect(self.data / "library.db") as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM custom_localizations").fetchone()[0], 0)
 
     def test_version_one_database_and_backup_migrate(self):
         older = self.root / "old-data"
@@ -225,6 +271,7 @@ class LocalCatalogTest(unittest.TestCase):
         file = older / "library.db"
         with sqlite3.connect(self.data / "library.db") as current, sqlite3.connect(file) as legacy:
             current.backup(legacy)
+            legacy.execute("DROP TABLE custom_localizations")
             legacy.execute("DROP TABLE store_about")
             legacy.execute("PRAGMA user_version = 1")
             legacy.execute("UPDATE games SET notes='Проверка старой библиотеки' WHERE id=1")
@@ -238,8 +285,22 @@ class LocalCatalogTest(unittest.TestCase):
         self.assertEqual(self.initial()["notes"], "Проверка старой библиотеки")
         for path in (file, self.data / "library.db"):
             with sqlite3.connect(path) as db:
-                self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 2)
+                self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 3)
                 self.assertEqual(db.execute("SELECT count(*) FROM store_about").fetchone()[0], 0)
+                self.assertEqual(db.execute("SELECT count(*) FROM custom_localizations").fetchone()[0], 0)
+
+    def test_version_two_database_migrates_without_losing_the_store_cache(self):
+        content_id = self.initial()["content_id"]
+        cached = {"language": "ru", "description": "Описание в старой базе"}
+        with sqlite3.connect(self.data / "library.db") as db:
+            db.execute("DROP TABLE custom_localizations")
+            db.execute("PRAGMA user_version = 2")
+            db.execute("INSERT INTO store_about VALUES (?,?,?)", (content_id, "ru", json.dumps(cached)))
+        with TestClient(create_app(self.data), base_url="http://localhost") as reopened:
+            self.assertEqual(reopened.get("/api/games/1").json()["custom_localizations"], [])
+        with sqlite3.connect(self.data / "library.db") as db:
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 3)
+            self.assertEqual(json.loads(db.execute("SELECT details FROM store_about").fetchone()[0]), cached)
 
     def test_playstation_store_art_preserves_bytes_and_backup(self):
         content_id = self.initial()["content_id"]

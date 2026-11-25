@@ -204,17 +204,24 @@ def create_app(data_directory=None, frontend_directory=None):
             if not playstation_url(content_id):
                 return None
             cached = db.execute("SELECT details FROM store_about WHERE content_id=?", (content_id,)).fetchone()
-        if cached:
-            return json.loads(cached["details"])
+        saved = json.loads(cached["details"]) if cached else None
+        if saved and "localization" in saved:
+            return saved
 
         try:
             with httpx.Client(timeout=httpx.Timeout(18, connect=5), follow_redirects=False) as client:
                 details = playstation_about(client, content_id)
         except httpx.HTTPStatusError as error:
+            if saved:
+                return saved
             raise HTTPException(502, "PlayStation Store временно недоступен") from error
         except (httpx.HTTPError, KeyError, TypeError, ValueError, AttributeError, ImportError) as error:
+            if saved:
+                return saved
             raise HTTPException(502, "Не удалось получить описание из PlayStation Store") from error
         if details:
+            if saved and saved["language"] == "ru" and details["language"] != "ru":
+                details = {**saved, "localization": details["localization"]}
             with database.connect() as db:
                 db.execute(
                     """INSERT INTO store_about(content_id,language,details) VALUES (?,?,?)
@@ -222,7 +229,7 @@ def create_app(data_directory=None, frontend_directory=None):
                        WHERE store_about.language != 'ru' OR excluded.language = 'ru'""",
                     (content_id, details["language"], json.dumps(details, ensure_ascii=False)),
                 )
-        return details
+        return details or saved
 
     @app.post("/api/games", status_code=201)
     def add_game(item: catalog.GameInput):
