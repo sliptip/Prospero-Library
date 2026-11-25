@@ -20,14 +20,15 @@ from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import __version__, catalog, patches, scanner
-from .artwork import (ARTWORK_KEYS, ART_NAME, MAX_IMAGE, PS_STORE_HOST, PS_STORE_SOURCE, Artwork, bounded_get,
-                      playstation_about, playstation_description, playstation_dlc, playstation_url, store_image)
+from .artwork import (ARTWORK_KEYS, ART_NAME, IMAGE_HOSTS, MAX_IMAGE, PS_STORE_SOURCE, Artwork,
+                      playstation_about, playstation_dlc, playstation_dlc_description, playstation_url, store_image)
 from .backup import BUNDLE_NAME, create_backup, restore_backup
 from .database import APP_DIRECTORY, BASE, Database, app_data_directory
 from .jobs import Jobs
 
 TITLE = "Prospero Library"
 LOG_TAIL_BYTES = 256 * 1024
+IMAGE_SOURCES = " ".join(f"https://{host}" for host in sorted(IMAGE_HOSTS))
 loopback = ["localhost", "127.0.0.1", "::1"]
 logger = logging.getLogger(__name__)
 
@@ -134,7 +135,7 @@ def create_app(data_directory=None, frontend_directory=None):
         if request.url.path not in {"/docs", "/redoc"}:
             response.headers["Content-Security-Policy"] = (
                 "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; "
-                f"img-src 'self' https://images.igdb.com https://cdn.steamgriddb.com https://{PS_STORE_HOST} blob:; "
+                f"img-src 'self' {IMAGE_SOURCES} blob:; "
                 "style-src 'self' 'unsafe-inline'"
             )
         return response
@@ -253,15 +254,12 @@ def create_app(data_directory=None, frontend_directory=None):
 
     @app.get("/api/store-dlc/{content_id}")
     def store_dlc_description(content_id: str, locale: Literal["ru-ua", "en-us", "en-gb", "ja-jp", "en-hk"] = "en-us"):
-        url = playstation_url(content_id, locale)
-        if not url:
+        if not playstation_url(content_id):
             raise HTTPException(422, "Некорректный Content ID")
         try:
             with httpx.Client(timeout=httpx.Timeout(8, connect=4), follow_redirects=False) as client:
-                info = playstation_description(bounded_get(client, url, 3_000_000), content_id, locale)
-            description = info.get("description") if info else None
-            return {"description": description}
-        except (httpx.HTTPError, KeyError, TypeError, ValueError, AttributeError, ImportError):
+                return {"description": playstation_dlc_description(client, content_id, locale)}
+        except ImportError:
             return {"description": None}
 
     @app.post("/api/games", status_code=201)

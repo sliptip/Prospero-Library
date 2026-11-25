@@ -24,7 +24,7 @@ LANGUAGE_PACK = re.compile(
     r"language pack|voice pack|voice[- ]?over pack|audio language|языков\w* пакет|пакет (?:язык\w*|озвучки)|"
     r"sprachpaket|pack de (?:idiomas?|langues?)|pacote de idioma|pacchetto lingu|言語パック|语言包|語言包|언어 팩", re.I,
 )
-IMAGE_HOSTS = {"images.igdb.com", "cdn.steamgriddb.com", PS_STORE_HOST}
+IMAGE_HOSTS = {"images.igdb.com", "cdn.steamgriddb.com", "cdn2.steamgriddb.com", PS_STORE_HOST}
 ARTWORK_KEYS = ("IGDB_CLIENT_ID", "IGDB_CLIENT_SECRET", "IGDB_ACCESS_TOKEN", "STEAMGRIDDB_API_KEY")
 
 
@@ -256,6 +256,21 @@ def playstation_details(props, content_id, locale):
 
 def playstation_description(page, content_id, locale="en-us"):
     return playstation_details(playstation_props(page, content_id), content_id, locale)
+
+
+def playstation_dlc_description(client, content_id, locale):
+    fallback = None
+    for region in dict.fromkeys(("ru-ua", locale)):
+        url = playstation_url(content_id, region)
+        try:
+            info = playstation_description(bounded_get(client, url, 3_000_000), content_id, region)
+        except (httpx.HTTPError, KeyError, TypeError, ValueError, AttributeError):
+            continue
+        if info and info["description"]:
+            if info["language"] == "ru" or region == locale:
+                return info["description"]
+            fallback = info["description"]
+    return fallback
 
 
 def playstation_dlc_candidates(props, content_id):
@@ -548,11 +563,10 @@ class Artwork:
             grids = client.get(f"{base}/grids/game/{game_id}", headers=headers,
                                params={"dimensions": "600x900", "types": "static", "nsfw": "false", "humor": "false"})
             grids.raise_for_status()
-            for art in grids.json().get("data", [])[:6]:
-                if image_url(art.get("url", "")):
-                    result.append({"title": game["name"], "id": str(art["id"]), "kind": "cover",
-                                   "source": "SteamGridDB", "url": art["url"],
-                                   "exact": len(exact) == 1})
+            covers = [art for art in grids.json().get("data", []) if image_url(art.get("url", ""))]
+            for art in covers[:6]:
+                result.append({"title": game["name"], "id": str(art["id"]), "kind": "cover",
+                               "source": "SteamGridDB", "url": art["url"], "exact": len(exact) == 1})
             time.sleep(0.3)
         return result
 
@@ -589,7 +603,16 @@ class Artwork:
                 if not available[label]:
                     continue
                 try:
-                    found.extend(obtain())
+                    items = obtain()
+                    found.extend(items)
+                    if label == "SteamGridDB" and not items:
+                        issues.append("SteamGridDB не нашёл подходящих обложек")
+                except httpx.HTTPStatusError as error:
+                    status = error.response.status_code
+                    if label in ("SteamGridDB", "IGDB") and status == 401:
+                        issues.append(f"{label} отклонил ключ (HTTP {status})")
+                    else:
+                        issues.append(f"{label} вернул HTTP {status}")
                 except (httpx.HTTPError, KeyError, TypeError, ValueError, AttributeError):
                     issues.append(f"{label} временно недоступен или вернул ошибку")
         return found, issues

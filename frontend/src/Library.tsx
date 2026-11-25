@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { ArrowDownUp, ArrowRight, ChevronDown, Gamepad2, Grid2X2, GripVertical, LibraryBig, List, Plus, SlidersHorizontal, X } from 'lucide-react'
-import { Game, availableDlcCount, gameCount, russianSupport, sizeText, stored } from './model'
+import { ArrowDownUp, ArrowRight, ChevronDown, CircleArrowUp, CircleCheck, Gamepad2, Grid2X2, GripVertical, LibraryBig, List, Plus, SlidersHorizontal, X } from 'lucide-react'
+import { Game, PatchState, availableDlcCount, gameCount, patchLabel, russianSupport, sizeText, stored } from './model'
 
 type Props = { games: Game[]; hideRecent: boolean; query: string; open: (game: Game) => void; add: () => void; swap: (source: number, target: number) => Promise<void> }
 type Sort = 'added_at' | 'title' | 'release_date' | 'size_bytes' | 'update' | 'manual'
@@ -17,6 +17,14 @@ const collator = new Intl.Collator(['ru', 'en'], { sensitivity: 'base', numeric:
 
 function matchText(value: string) {
   return value.normalize('NFKC').toLocaleLowerCase('ru').replaceAll('ё', 'е')
+}
+
+function CollectionPatchStatus({ state }: { state: PatchState }) {
+  if (state !== 'current' && state !== 'available') return null
+  const Icon = state === 'current' ? CircleCheck : CircleArrowUp
+  return <span className={'collection-patch-status ' + state} role="img" aria-label={patchLabel[state]} title={patchLabel[state]}>
+    <Icon size={13} aria-hidden="true" />
+  </span>
 }
 
 export function Cover({ game, className = '' }: { game: Game; className?: string }) {
@@ -176,11 +184,11 @@ export function Library({ games, hideRecent, query, open, add, swap }: Props) {
             <div className="tile-art">
               <Cover game={game} />
               {mode === 'grid' && <span className="platform tile-platform">{game.platform}</span>}
-              {mode === 'grid' && game.patch.state === 'available' && <span className="patch-dot" title="Есть обновление" />}
             </div>
             <div className="tile-text">
-              <strong>{game.title}</strong>
-              {mode === 'list' ? <span>{game.edition || game.title_id}</span> : <span className="tile-meta"><span>{game.collection_version || '—'}</span>
+              <strong>{game.title}{mode === 'list' && <CollectionPatchStatus state={game.patch.state} />}</strong>
+              {mode === 'list' ? <span>{game.edition || game.title_id}</span> : <span className="tile-meta">
+                <span>{game.collection_version || '—'}<CollectionPatchStatus state={game.patch.state} /></span>
                 {dlcCount > 0 && <span>{dlcCount} DLC</span>}</span>}
             </div>
             {mode === 'list' && <><span className="platform">{game.platform}</span><span className="mono row-version">{game.collection_version || '—'}</span>

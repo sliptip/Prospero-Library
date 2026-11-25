@@ -347,6 +347,36 @@ class LocalCatalogTest(unittest.TestCase):
             self.assertTrue(reopened.get("/api/settings").json()["hide_recent"])
         self.assertFalse(self.client.patch("/api/settings/library", json={"hide_recent": False}).json()["hide_recent"])
 
+    def test_store_dlc_description_prefers_russian_and_falls_back_to_listing_region(self):
+        content_id = "EP0001-PPSA01506_00-DLCEXPANSION0003"
+        russian_path = f"/ru-ua/product/{content_id}"
+        english_path = f"/en-gb/product/{content_id}"
+        paths = []
+
+        def page(locale, description):
+            info = {"id": content_id, "descriptions": [{"type": "LONG", "value": description}]}
+            cache = json.dumps({"cache": {f"Product:{content_id}": info}})
+            props = {"productId": content_id, "locale": locale, "batarangs": {"info": {"text": f"<script>{cache}</script>"}}}
+            payload = json.dumps({"props": {"pageProps": props}}).replace("<", r"\u003c")
+            return f'<script id="__NEXT_DATA__">{payload}</script>'.encode()
+
+        pages = {russian_path: page("ru-ua", "Описание на русском"),
+                 english_path: page("en-gb", "English description")}
+
+        def respond(request):
+            path = request.url.path
+            paths.append(path)
+            return httpx.Response(200, content=pages[path]) if path in pages else httpx.Response(404)
+
+        transport = httpx.MockTransport(respond)
+        clients = [httpx.Client(transport=transport), httpx.Client(transport=transport)]
+        with patch("backend.main.httpx.Client", side_effect=clients):
+            url = f"/api/store-dlc/{content_id}?locale=en-gb"
+            self.assertEqual(self.client.get(url).json(), {"description": "Описание на русском"})
+            del pages[russian_path]
+            self.assertEqual(self.client.get(url).json(), {"description": "English description"})
+        self.assertEqual(paths, [russian_path, russian_path, english_path])
+
     def test_store_dlc_merges_same_concept_regional_lists(self):
         base = "EP4321-PPSA12345_00-BASE000000000001"
         related = "EP4321-PPSA12346_00-BASE000000000001"
@@ -528,6 +558,45 @@ class LocalCatalogTest(unittest.TestCase):
         backup = self.client.post("/api/backups").json()["name"]
         with ZipFile(self.data / "backups" / backup) as archive:
             self.assertNotIn("artwork-keys.json", archive.namelist())
+
+    def test_steamgriddb_cdn2_covers_can_be_previewed_and_saved(self):
+        game = self.client.post("/api/games", json={"title": "Cuphead", "platform": "PS4",
+                                                     "title_id": "CUSA20469"}).json()
+        endpoint = f"/api/games/{game['id']}/artwork"
+        self.client.patch("/api/settings/artwork", json={"STEAMGRIDDB_API_KEY": "fixture-key"})
+        url = "https://cdn2.steamgriddb.com/grid/cuphead.png"
+        image = io.BytesIO()
+        Image.new("RGB", (120, 180), "yellow").save(image, "PNG")
+        responses = {
+            "/api/v2/search/autocomplete/Cuphead": {"data": [{"id": 15, "name": "Cuphead"}]},
+            "/api/v2/grids/game/15": {"data": [
+                {"id": 41, "url": "https://other.example/cover.png"}, {"id": 42, "url": url}
+            ]},
+        }
+
+        def respond(request):
+            if str(request.url) == url:
+                self.assertNotIn("authorization", request.headers)
+                return httpx.Response(200, content=image.getvalue())
+            self.assertEqual(request.headers["Authorization"], "Bearer fixture-key")
+            return httpx.Response(200, json=responses[request.url.path])
+
+        transport = httpx.MockTransport(respond)
+        clients = [httpx.Client(transport=transport), httpx.Client(transport=transport)]
+        with patch.dict(os.environ, {"IGDB_CLIENT_ID": ""}), patch("backend.artwork.httpx.Client", side_effect=clients):
+            found = self.client.post(endpoint + "/search")
+            self.assertEqual(found.status_code, 200, found.text)
+            self.assertIn("https://cdn2.steamgriddb.com ", found.headers["content-security-policy"])
+            items = found.json()["items"]
+            self.assertEqual([item["url"] for item in items], [url])
+            saved = self.client.post(endpoint + "/select", json={"token": items[0]["token"]})
+            self.assertEqual(saved.status_code, 200, saved.text)
+            self.assertEqual(saved.json()["cover_source"], "SteamGridDB · 42")
+
+        denied = httpx.Client(transport=httpx.MockTransport(lambda req: httpx.Response(401)))
+        with patch.dict(os.environ, {"IGDB_CLIENT_ID": ""}), patch("backend.artwork.httpx.Client", return_value=denied):
+            found = self.client.post(endpoint + "/search").json()
+        self.assertIn("SteamGridDB отклонил ключ (HTTP 401)", found["issues"])
 
     def test_store_art_uses_regional_page_for_the_same_product(self):
         content_id = "EP9000-CUSA03173_00-BLOODBORNE0000EU"

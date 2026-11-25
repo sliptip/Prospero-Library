@@ -192,12 +192,14 @@ kbd { color: #aba8a4; flex-shrink: 0; background: #292a2c; border: 1px solid #42
 .game-tile .cover { border: 1px solid #f1c69029; transition: border-color .18s, filter .18s; }
 .game-tile:hover .cover { border-color: var(--accent); filter: brightness(1.12); }
 .tile-platform { position: absolute; top: 9px; left: 9px; background: #151415e8; }
-.patch-dot { position: absolute; right: 9px; top: 9px; border: 1px solid #634920; border-radius: 50%; width: 10px; height: 10px; background: var(--accent); }
+.collection-patch-status { display: inline-flex; vertical-align: middle; margin-left: 6px; line-height: 1; }
+.collection-patch-status.current { color: var(--positive); }
+.collection-patch-status.available { color: var(--accent); }
 .tile-text { margin-top: 9px; min-width: 0; }
 .tile-text strong { display: block; font-size: 13px; font-weight: 810; line-height: 1.35; overflow-wrap: anywhere; }
 .tile-text > span { display: block; color: var(--muted); font-size: 12px; margin-top: 4px; }
 .tile-text .tile-meta { display: flex; gap: 8px; flex-wrap: wrap; font: 10px var(--mono); color: #bab3aa; }
-.tile-meta span + span::before { content: '·'; margin-right: 8px; color: #8e867f; }
+.tile-meta > span + span::before { content: '·'; margin-right: 8px; color: #8e867f; }
 .add-tile {
   aspect-ratio: 2 / 3; display: flex; gap: 9px; flex-direction: column; align-items: center; justify-content: center;
   border: 1px dashed #38393c; border-radius: 9px; background: #18191a; color: #aaa6a2; font-size: 12px; font-weight: 740;
@@ -215,7 +217,6 @@ kbd { color: #aba8a4; flex-shrink: 0; background: #292a2c; border: 1px solid #42
   background: #171719ed; border: 1px solid #5c5141; color: #f3d4a9; }
 .reorderable .reorder-handle:active { cursor: grabbing; }
 .reorderable .reorder-handle[aria-pressed='true'] { color: #18130d; background: var(--accent); }
-.reorderable .patch-dot { right: 43px; }
 .game-list .reorderable .game-row { padding-right: 46px; }
 .game-list .reorder-handle { top: 50%; transform: translateY(-50%); right: 8px; }
 .game-row {

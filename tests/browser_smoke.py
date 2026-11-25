@@ -68,6 +68,7 @@ def run(screenshots, browser_executable):
             expect(page.get_by_role("heading", name="Моя библиотека")).to_be_visible()
             expect(page.locator(".sidebar-version")).to_have_text(re.compile(r"^v\d+\.\d+\.\d+$"))
             expect(page.get_by_role("button", name="Открыть карточку")).to_be_visible()
+            expect(page.locator(".collection-patch-status")).to_have_count(0)
             capture(page, screenshots, "Prospero-Library.png")
 
             page.get_by_role("link", name="Настройки").click()
@@ -359,6 +360,14 @@ def run(screenshots, browser_executable):
                 db.execute("INSERT INTO games (platform,title_id,title,added_at) VALUES ('PS4','CUSA20469','Cuphead','2026-11-25')")
                 game_id = db.execute("SELECT id FROM games WHERE title_id='CUSA20469'").fetchone()[0]
                 root_id = db.execute("INSERT INTO roots (path,state) VALUES ('PS4 fixtures','online')").lastrowid
+                build_id = db.execute("INSERT INTO builds (game_id,identity,version) VALUES (?,'base-fixture','01.00')",
+                                      (game_id,)).lastrowid
+                db.execute("INSERT INTO files (root_id,relpath,size_bytes,mtime,build_id) VALUES (?,'base.pkg',100,0,?)",
+                           (root_id, build_id))
+                db.execute("""INSERT INTO ps4_extras (root_id,relpath,size_bytes,mtime,title_id,kind,title,version)
+                              VALUES (?,'update.pkg',100,0,'CUSA20469','patch','Update','01.05')""", (root_id,))
+                db.execute("INSERT INTO checks VALUES (?,'ok','OrbisPatches',?,?,NULL,'01.05')", (game_id, stamp, stamp))
+                db.execute("INSERT INTO patch_history VALUES (?,'01.05','9.60','OrbisPatches',?,NULL)", (game_id, stamp))
                 package_id = "EP8254-CUSA20469_00-CUPHEADDLC000000"
                 db.execute("""INSERT INTO dlc (game_id,name,description,status,content_id)
                               VALUES (?,'Delicious Last Course','Описание дополнения','configured',?)""",
@@ -372,6 +381,11 @@ def run(screenshots, browser_executable):
             page.reload(wait_until="networkidle")
             cuphead = page.locator(".game-tile").filter(has_text="Cuphead")
             expect(cuphead.get_by_text("2 DLC", exact=True)).to_be_visible()
+            expect(cuphead.get_by_role("img", name="Актуальная версия")).to_be_visible()
+            expect(page.locator(".game-tile").filter(has_text="Castlevania").get_by_role("img", name="Есть обновление")).to_be_visible()
+            page.get_by_role("button", name="Список", exact=True).click()
+            expect(page.locator(".game-row").filter(has_text="Cuphead").get_by_role("img", name="Актуальная версия")).to_be_visible()
+            page.get_by_role("button", name="Шкаф", exact=True).click()
             cuphead.click()
             expansion_row = page.locator(".dlc-row").filter(has_text="Delicious Last Course")
             filename = expansion_row.locator(".package-file")
