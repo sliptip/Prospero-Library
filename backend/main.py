@@ -259,7 +259,7 @@ def create_app(data_directory=None, frontend_directory=None):
             with httpx.Client(timeout=httpx.Timeout(8, connect=4), follow_redirects=False) as client:
                 info = playstation_description(bounded_get(client, url, 3_000_000), content_id, locale)
             description = info.get("description") if info else None
-            return {"description": description[:1000] if description else None}
+            return {"description": description}
         except (httpx.HTTPError, KeyError, TypeError, ValueError, AttributeError, ImportError):
             return {"description": None}
 

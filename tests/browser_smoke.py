@@ -256,6 +256,17 @@ def run(screenshots, browser_executable):
             expect(page.get_by_text("Бонусы Special Edition", exact=True)).to_be_visible()
             expect(page.get_by_text("Описание загружено из магазина", exact=True)).to_be_visible()
 
+            full_description = ("Подробное описание. " * 60) + "Последняя строка из магазина."
+            page.route("**/api/store-dlc/" + expansion + "?*", lambda route:
+                       route.fulfill(json={"description": full_description}))
+            page.get_by_role("button", name="Редактировать").click()
+            editor.get_by_role("button", name="Найти в магазине").click()
+            choices.get_by_role("button", name="Обновить описание DLC из магазина").click()
+            expect(editor.get_by_role("textbox", name="Описание", exact=True).last).to_have_value(full_description)
+            editor.get_by_role("button", name="Сохранить", exact=True).click()
+            expect(page.get_by_text("Последняя строка из магазина.", exact=False)).to_be_visible()
+            expect(page.get_by_text("DLC из магазина", exact=True)).to_have_count(1)
+
             page.get_by_role("button", name="Оформление").click()
             upload = page.get_by_label("Загрузить обложку")
             upload.set_input_files(cover)

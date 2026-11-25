@@ -82,7 +82,8 @@ export function GameEditor({ game, close, save }: { game?: Game; close: () => vo
     finally { setStoreLoading(false) }
   }
 
-  async function addStoreDlc(item: StoreDlc) {
+  async function addStoreDlc(item: StoreDlc, refreshDescription = false) {
+    setStoreError('')
     setAddingDlc(item.id)
     let description = item.description
     if (item.content_id && !description) {
@@ -90,13 +91,18 @@ export function GameEditor({ game, close, save }: { game?: Game; close: () => vo
       const details = await api<{ description: string | null }>(url).catch(() => null)
       description = details?.description ?? null
     }
+    if (refreshDescription && !description) {
+      setStoreError('Не удалось загрузить описание из PlayStation Store')
+      setAddingDlc(null)
+      return
+    }
     setDlc(items => {
       const existing = items.find(row => matchesStoreDlc(row, item))
       if (existing) return items.map(row => row === existing ? {
-        ...row, description: item.kind === 'edition' ? description : row.description || description,
+        ...row, description: item.kind === 'edition' || refreshDescription ? description : row.description || description,
         content_id: row.content_id || item.content_id,
       } : row)
-      if (items.length >= 100) return items
+      if (refreshDescription || items.length >= 100) return items
       return [...items, { name: storeDlcName(item), description, content_id: item.content_id, status: 'unknown' }]
     })
     setAddingDlc(null)
@@ -201,14 +207,17 @@ export function GameEditor({ game, close, save }: { game?: Game; close: () => vo
             {storeDlc.map(item => {
               const existing = dlc.find(row => matchesStoreDlc(row, item))
               const replaceEdition = !!existing && item.kind === 'edition' && item.description !== existing.description
+              const refreshDescription = !!existing?.content_id && item.kind === 'dlc' && !!item.content_id
               const canFill = !!existing && ((!existing.content_id && !!item.content_id) || replaceEdition)
-              const action = replaceEdition ? 'Вставить состав' : canFill ? 'Заполнить' : existing ? 'В карточке' : 'Добавить'
+              const action = refreshDescription ? 'Обновить описание' : replaceEdition ? 'Вставить состав'
+                : canFill ? 'Заполнить' : existing ? 'В карточке' : 'Добавить'
               return <li key={item.kind + item.id}>
                 <div><small className="muted">{item.kind === 'edition' ? 'Состав издания' : 'DLC'}</small>
                   <strong>{item.name}</strong>
                   {item.description && <p>{item.description}</p>}</div>
                 <button type="button" className="text-button" aria-label={action + ' ' + item.name}
-                  disabled={!!addingDlc || (existing ? !canFill : dlc.length >= 100)} onClick={() => void addStoreDlc(item)}>
+                  disabled={!!addingDlc || (existing ? !canFill && !refreshDescription : dlc.length >= 100)}
+                  onClick={() => void addStoreDlc(item, refreshDescription)}>
                   {addingDlc === item.id ? 'Загружаю…' : action}
                 </button>
               </li>
@@ -223,7 +232,7 @@ export function GameEditor({ game, close, save }: { game?: Game; close: () => vo
             </select></label>
             <button className="icon-button" type="button" title="Удалить строку DLC" aria-label="Удалить строку DLC"
               onClick={() => setDlc(dlc.filter((_, i) => i !== index))}><X size={18} /></button>
-            <label className="field span-two">Описание<textarea rows={2} maxLength={1000} value={item.description || ''}
+            <label className="field span-two">Описание<textarea rows={2} value={item.description || ''}
               onChange={event => setDlc(dlc.map((other, i) => i === index ? { ...other, description: event.target.value } : other))} /></label>
           </div>)}
         </div>

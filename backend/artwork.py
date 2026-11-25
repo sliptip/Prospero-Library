@@ -314,7 +314,7 @@ def playstation_dlc_candidates(props, content_id):
                     and not LANGUAGE_PACK.search(feature)]
         if features:
             candidates.append({"id": edition_id, "kind": "edition", "name": name[:245],
-                               "description": "\n".join("• " + feature for feature in features)[:1000],
+                               "description": "\n".join("• " + feature for feature in features),
                                "content_id": None, "locale": locale})
     return candidates
 

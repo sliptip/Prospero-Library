@@ -16,7 +16,7 @@ Version = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^[0-
 class DLC(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: Name
-    description: str | None = Field(default=None, max_length=1000)
+    description: str | None = None
     status: Literal["configured", "verified", "unknown", "absent"] = "unknown"
     content_id: str | None = Field(default=None, max_length=80)
 

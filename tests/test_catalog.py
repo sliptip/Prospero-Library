@@ -313,7 +313,8 @@ class LocalCatalogTest(unittest.TestCase):
             payload = json.dumps({"props": {"pageProps": props}}).replace("<", r"\u003c")
             return f'<script id="__NEXT_DATA__">{payload}</script>'.encode()
 
-        description = {"id": expansion, "descriptions": [{"type": "LONG", "value": "Описание дополнения"}]}
+        full_description = ("Описание дополнения. " * 64) + "Последняя строка."
+        description = {"id": expansion, "descriptions": [{"type": "LONG", "value": full_description}]}
         responses = {base_id: page(base_id, **{"add-ons": addons, "upsells": editions}),
                      expansion: page(expansion, info={f"Product:{expansion}": description})}
         transport = httpx.MockTransport(
@@ -329,8 +330,14 @@ class LocalCatalogTest(unittest.TestCase):
             self.assertEqual(items[1]["description"], "• Digital Gallery")
             self.assertIsNone(items[1]["content_id"])
             details = self.client.get(f"/api/store-dlc/{expansion}?locale=ru-ua")
-            self.assertEqual(details.json(), {"description": "Описание дополнения"})
-        self.assertEqual(len(self.initial()["dlc"]), 2)
+            self.assertEqual(details.json(), {"description": full_description})
+        game = self.initial()
+        self.assertEqual(len(game["dlc"]), 2)
+        updated = game_body(game, dlc=[*game["dlc"], {"name": items[0]["name"], "content_id": expansion,
+                                                   "description": full_description}])
+        response = self.client.put("/api/games/1", json=updated)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.initial()["dlc"][-1]["description"], full_description)
 
     def test_hide_recent_preference_survives_restart_and_settings_edits(self):
         self.assertFalse(self.client.get("/api/settings").json()["hide_recent"])
