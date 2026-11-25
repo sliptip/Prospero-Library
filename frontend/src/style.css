@@ -268,8 +268,8 @@ kbd { color: #aba8a4; flex-shrink: 0; background: #292a2c; border: 1px solid #42
 .dlc-list { display: grid; gap: 4px; }
 .dlc-row { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 11px 0; border-top: 1px solid #303030; }
 .dlc-icon { display: grid; place-items: center; flex: 0 0 34px; height: 34px; background: #2a2622; color: #d9af77; border-radius: 6px; }
-.dlc-row strong { font-size: 13px; }
-.dlc-row p { font-size: 12px; color: var(--muted); margin-top: 3px; }
+.dlc-row strong { font-size: 13px; overflow-wrap: anywhere; }
+.dlc-row p { font-size: 12px; color: var(--muted); margin-top: 3px; white-space: pre-line; overflow-wrap: anywhere; }
 .dlc-row .status-pill { margin-left: auto; }
 .notes { white-space: pre-wrap; font-size: 13px; line-height: 1.65; color: #dbd6ce; overflow-wrap: anywhere; }
 .management-stack { display: grid; gap: 14px; }
@@ -326,6 +326,16 @@ kbd { color: #aba8a4; flex-shrink: 0; background: #292a2c; border: 1px solid #42
 .package-editor p { margin-top: 3px; font-size: 12px; }
 .dlc-editor, .localization-editor, .localization-group { border-top: 1px solid var(--line); padding-top: 11px; }
 .dlc-editor h3, .localization-editor h3, .localization-group h3 { font-size: 14px; font-weight: 800; }
+.preference-label { white-space: normal; }
+.dlc-actions { flex-wrap: wrap; gap: 8px; }
+.dlc-actions .button-row { margin: 0; }
+.store-dlc-list { list-style: none; margin: 10px 0; padding: 0; border: 1px solid var(--line); border-radius: 8px; }
+.store-dlc-list li { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 9px 11px; }
+.store-dlc-list li + li { border-top: 1px solid var(--line); }
+.store-dlc-list small, .store-dlc-list strong { display: block; }
+.store-dlc-list strong { font-size: 13px; overflow-wrap: anywhere; }
+.store-dlc-list p { font-size: 12px; white-space: pre-line; color: var(--muted); }
+.store-dlc-list .text-button { flex-shrink: 0; }
 .localization-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 155px), 1fr)); gap: 8px;
   border: 1px solid var(--line); border-radius: 8px; margin-top: 10px; padding: 10px; }
 .localization-form .section-heading { grid-column: 1 / -1; align-items: end; }

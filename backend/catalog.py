@@ -146,12 +146,21 @@ def patch_view(db, game, target):
     else:
         compatible = None
     state = "unknown"
-    if latest and version_key(game["version"]):
-        state = "available" if version_key(latest["version"]) > version_key(game["version"]) else "current"
+    if latest and version_key(game["collection_version"]):
+        state = "available" if version_key(latest["version"]) > version_key(game["collection_version"]) else "current"
     if check and check["state"] == "error":
         state = "error"
     return {"state": state, "latest": latest, "manual": manual, "compatible": compatible, "history": history,
             "target": target or None, "check": dict(check) if check else None}
+
+
+def ps4_packages(db, title_id):
+    return [dict(row) for row in db.execute(
+        """SELECT x.kind,x.title,x.content_id,x.version,x.firmware,x.size_bytes,x.relpath,
+                  CASE WHEN x.available AND r.state IN ('online','partial') THEN 'online' ELSE 'offline' END file_state
+           FROM ps4_extras x JOIN roots r ON r.id=x.root_id
+           WHERE x.title_id=? ORDER BY x.kind,x.relpath,r.id""", (title_id,),
+    )]
 
 
 def library(db, game_id=None):
@@ -208,6 +217,10 @@ def library(db, game_id=None):
         )]
         file_build = build if build.get("linked") else imported
         game["file_state"] = "online" if file_build.get("online") else "offline" if file_build.get("linked") else "unlinked"
+        game["local_packages"] = ps4_packages(db, game["title_id"]) if game["platform"] == "PS4" else []
+        patches = (item["version"] for item in game["local_packages"] if item["kind"] == "patch"
+                   and item["file_state"] == "online" and game["file_state"] == "online")
+        game["collection_version"] = max((game["version"], *patches), key=version_key)
         game["dlc"] = [dict(row) for row in db.execute(
             "SELECT name,description,status,content_id FROM dlc WHERE game_id=? ORDER BY id", (game["id"],),
         )]

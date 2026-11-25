@@ -8,7 +8,7 @@ from threading import RLock
 BASE = Path(__file__).resolve().parent.parent
 DEFAULT_DATA = Path(os.getenv("LOCALAPPDATA", Path.home() / ".local" / "share")) / "Prospero Library"
 APP_ID = 1347571527
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 SCHEMA = """
 CREATE TABLE games (
     id INTEGER PRIMARY KEY, platform TEXT NOT NULL, title_id TEXT NOT NULL,
@@ -63,11 +63,22 @@ CREATE TABLE custom_localizations (
 );
 """
 CUSTOM_LOCALIZATION_INDEX = "CREATE INDEX custom_localizations_by_game ON custom_localizations(game_id);"
+PS4_EXTRA_SCHEMA = """
+CREATE TABLE ps4_extras (
+    root_id INTEGER NOT NULL REFERENCES roots(id) ON DELETE CASCADE,
+    relpath TEXT NOT NULL, size_bytes INTEGER NOT NULL, mtime INTEGER NOT NULL,
+    title_id TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('patch','dlc')),
+    title TEXT NOT NULL, content_id TEXT, version TEXT, firmware TEXT, available INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (root_id, relpath)
+);
+"""
+PS4_EXTRA_INDEX = "CREATE INDEX ps4_extras_by_title ON ps4_extras(title_id);"
 SCHEMAS = {
     1: SCHEMA,
     2: SCHEMA + STORE_ABOUT_SCHEMA,
     3: SCHEMA + STORE_ABOUT_SCHEMA + CUSTOM_LOCALIZATION_SCHEMA + CUSTOM_LOCALIZATION_INDEX,
 }
+SCHEMAS[4] = SCHEMAS[3] + PS4_EXTRA_SCHEMA + PS4_EXTRA_INDEX
 
 
 def now():
@@ -79,8 +90,11 @@ def upgrade(db, version):
         db.execute("BEGIN IMMEDIATE")
         if version == 1:
             db.execute(STORE_ABOUT_SCHEMA)
-        db.execute(CUSTOM_LOCALIZATION_SCHEMA)
-        db.execute(CUSTOM_LOCALIZATION_INDEX)
+        if version < 3:
+            db.execute(CUSTOM_LOCALIZATION_SCHEMA)
+            db.execute(CUSTOM_LOCALIZATION_INDEX)
+        db.execute(PS4_EXTRA_SCHEMA)
+        db.execute(PS4_EXTRA_INDEX)
         db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 

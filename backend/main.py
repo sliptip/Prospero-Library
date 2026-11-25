@@ -19,8 +19,8 @@ from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import __version__, catalog, patches, scanner
-from .artwork import (ART_NAME, MAX_IMAGE, PS_STORE_HOST, PS_STORE_SOURCE, Artwork, playstation_about,
-                      playstation_url, providers, store_image)
+from .artwork import (ART_NAME, MAX_IMAGE, PS_STORE_HOST, PS_STORE_SOURCE, Artwork, bounded_get, playstation_about,
+                      playstation_description, playstation_dlc, playstation_url, providers, store_image)
 from .backup import BUNDLE_NAME, create_backup, restore_backup
 from .database import BASE, DEFAULT_DATA, Database
 from .jobs import Jobs
@@ -35,6 +35,10 @@ class SettingsInput(BaseModel):
     cli_path: str = Field(max_length=2048)
     ps5_firmware: catalog.Version | None = None
     ps4_firmware: catalog.Version | None = None
+
+
+class LibrarySettingsInput(BaseModel):
+    hide_recent: bool
 
 
 class RootInput(BaseModel):
@@ -231,6 +235,34 @@ def create_app(data_directory=None, frontend_directory=None):
                 )
         return details or saved
 
+    @app.get("/api/games/{game_id}/store-dlc")
+    def game_store_dlc(game_id: int):
+        with database.connect() as db:
+            games = catalog.library(db, game_id)
+        if not games:
+            raise HTTPException(404, "Карточка не найдена")
+        content_id = games[0]["content_id"]
+        if not playstation_url(content_id):
+            return []
+        try:
+            with httpx.Client(timeout=httpx.Timeout(12, connect=5), follow_redirects=False) as client:
+                return playstation_dlc(client, content_id)
+        except (httpx.HTTPError, KeyError, TypeError, ValueError, AttributeError, ImportError) as error:
+            raise HTTPException(502, "Не удалось загрузить дополнения из PlayStation Store") from error
+
+    @app.get("/api/store-dlc/{content_id}")
+    def store_dlc_description(content_id: str, locale: Literal["ru-ua", "en-us", "en-gb", "ja-jp", "en-hk"] = "en-us"):
+        url = playstation_url(content_id, locale)
+        if not url:
+            raise HTTPException(422, "Некорректный Content ID")
+        try:
+            with httpx.Client(timeout=httpx.Timeout(8, connect=4), follow_redirects=False) as client:
+                info = playstation_description(bounded_get(client, url, 3_000_000), content_id, locale)
+            description = info.get("description") if info else None
+            return {"description": description[:1000] if description else None}
+        except (httpx.HTTPError, KeyError, TypeError, ValueError, AttributeError, ImportError):
+            return {"description": None}
+
     @app.post("/api/games", status_code=201)
     def add_game(item: catalog.GameInput):
         try:
@@ -326,7 +358,15 @@ def create_app(data_directory=None, frontend_directory=None):
             config.pop("game_order", None)
             config.pop("card_identities", None)
             roots = [dict(row) for row in db.execute("SELECT * FROM roots ORDER BY id")]
-        return {**config, "roots": roots, "providers": providers(), "cli_local": scanner.local_cli() is not None}
+        return {**config, "hide_recent": config.get("hide_recent") == "1",
+                "roots": roots, "providers": providers(), "cli_local": scanner.local_cli() is not None}
+
+    @app.patch("/api/settings/library")
+    def save_library_settings(item: LibrarySettingsInput):
+        with database.connect() as db:
+            db.execute("INSERT INTO settings VALUES ('hide_recent',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                       ("1" if item.hide_recent else "0",))
+        return get_settings()
 
     @app.put("/api/settings")
     def save_settings(item: SettingsInput):

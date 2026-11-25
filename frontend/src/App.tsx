@@ -4,7 +4,7 @@ import { ArtworkDialog, GameEditor, GamePage } from './Game'
 import { Library } from './Library'
 import { JobDialog, JournalDialog, SettingsPage, Updates } from './Management'
 import { api, json } from './model'
-import type { Game, Job, StoreLocalization } from './model'
+import type { Game, Job, Settings, StoreLocalization } from './model'
 
 function active(job: Job | null) {
   return job?.status === 'running' || job?.status === 'cancelling'
@@ -19,6 +19,7 @@ export function App() {
   const [route, setRoute] = useState(window.location.pathname)
   const [games, setGames] = useState<Game[]>([])
   const [ready, setReady] = useState(false)
+  const [hideRecent, setHideRecent] = useState(false)
   const [query, setQuery] = useState('')
   const [job, setJob] = useState<Job | null>(null)
   const [jobOpen, setJobOpen] = useState(new URLSearchParams(window.location.search).has('job'))
@@ -30,7 +31,9 @@ export function App() {
   const input = useRef<HTMLInputElement>(null)
 
   const refresh = useCallback(async () => {
-    setGames(await api<Game[]>('/games'))
+    const [items, settings] = await Promise.all([api<Game[]>('/games'), api<Settings>('/settings').catch(() => null)])
+    setGames(items)
+    if (settings) setHideRecent(settings.hide_recent)
     setReady(true)
   }, [])
   const saveLocalization = useCallback((id: number, contentId: string, localization: StoreLocalization) => {
@@ -153,7 +156,8 @@ export function App() {
           {ready && <button className="text-button" onClick={() => setJournalOpen(true)}>Журнал</button>}
           <button className="icon-button" aria-label="Закрыть уведомление" onClick={() => setError('')}><X size={17} /></button></div>}
         {!ready && !error && <p className="muted" role="status">Загружаю библиотеку…</p>}
-        {ready && home && <Library games={games} query={query} open={game => showGame(game.id)} add={() => setMode('new')} swap={swapGames} />}
+        {ready && home && <Library games={games} hideRecent={hideRecent} query={query}
+          open={game => showGame(game.id)} add={() => setMode('new')} swap={swapGames} />}
         {ready && current && <GamePage key={current.id} game={current} back={() => navigate('/')} edit={() => setMode('edit')}
           onLocalization={saveLocalization}
           art={() => setMode('art')} updating={updating} updates={() => void start('/updates?game_id=' + current.id)}
@@ -162,7 +166,7 @@ export function App() {
           <button className="button outlined" onClick={() => navigate('/')}>К библиотеке</button></div>}
         {ready && route === '/updates' && <Updates games={games} open={showGame} busy={updating}
           start={id => void start('/updates' + (id == null ? '' : '?game_id=' + id))} />}
-        {route === '/settings' && <SettingsPage refresh={refresh} running={updating} scan={force => void start('/scan', { force: !!force })}
+        {route === '/settings' && <SettingsPage refresh={refresh} setHideRecent={setHideRecent} running={updating} scan={force => void start('/scan', { force: !!force })}
           openJournal={() => setJournalOpen(true)} />}
       </main>
     </div>

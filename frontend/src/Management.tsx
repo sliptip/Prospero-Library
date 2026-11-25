@@ -25,7 +25,7 @@ export function Updates({ games, open, start, busy }: {
           <button className="icon-button" onClick={() => start(game.id)} disabled={busy} title="Проверить игру" aria-label={'Проверить ' + game.title}><RefreshCw size={17} /></button>
         </div>
         <dl className="meta-grid update-meta">
-          <div><dt>В коллекции</dt><dd className="mono">{game.version || unknown}</dd></div>
+          <div><dt>В коллекции</dt><dd className="mono">{game.collection_version || unknown}</dd></div>
           <div><dt>Последний официальный</dt><dd className="mono">{game.patch.latest?.version || unknown}</dd></div>
           <div><dt>Прошивка патча</dt><dd className="mono" title={game.patch.latest?.firmware ?? undefined}>
             {patchFirmwareText(game.patch.latest?.firmware)}</dd></div>
@@ -86,8 +86,9 @@ function RootForm({ root, close, save }: { root: Root | null; close: () => void;
   </Dialog>
 }
 
-export function SettingsPage({ refresh, scan, running, openJournal }: {
-  refresh: () => Promise<void>; scan: (force?: boolean) => void; running: boolean; openJournal: () => void;
+export function SettingsPage({ refresh, setHideRecent, scan, running, openJournal }: {
+  refresh: () => Promise<void>; setHideRecent: (value: boolean) => void;
+  scan: (force?: boolean) => void; running: boolean; openJournal: () => void;
 }) {
   const [settings, setSettings] = useState<Settings | null>(null)
   const [backups, setBackups] = useState<string[]>([])
@@ -134,6 +135,23 @@ export function SettingsPage({ refresh, scan, running, openJournal }: {
     {notice && <p className="banner" role="status">{notice}</p>}
     {!settings && !error && <p role="status" className="muted">Загружаю настройки…</p>}
     {settings && <div className="management-stack">
+      <section className="panel">
+        <h2>Библиотека</h2>
+        <label className="check-label preference-label"><input type="checkbox" checked={settings.hide_recent} disabled={busy}
+          onChange={event => {
+            const hideRecent = event.target.checked
+            update('hide_recent', hideRecent)
+            void action(async () => {
+              try {
+                const saved = await api<Settings>('/settings/library', json('PATCH', { hide_recent: hideRecent }))
+                setHideRecent(saved.hide_recent)
+              } catch (error) {
+                setSettings(current => current && { ...current, hide_recent: !hideRecent })
+                throw error
+              }
+            })
+          }} />Скрывать недавно добавленную игру</label>
+      </section>
       <section className="panel">
         <div className="section-heading"><h2>Папки коллекции <span className="count-badge">{settings.roots.length}</span></h2>
           <button className="button outlined compact" disabled={running || busy}

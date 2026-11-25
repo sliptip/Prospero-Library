@@ -13,7 +13,7 @@ from pathlib import Path
 
 import httpx
 
-from .artwork import MAX_IMAGE, PS_STORE_PRODUCT, PS_STORE_SOURCE, Artwork, bounded_get, providers, store_image
+from .artwork import LANGUAGE_PACK, MAX_IMAGE, PS_STORE_PRODUCT, PS_STORE_SOURCE, Artwork, bounded_get, providers, store_image
 from .catalog import version_key
 from .database import BASE, now
 from .seed import PUBLISHER_METADATA
@@ -23,9 +23,11 @@ FILE_TITLE = re.compile(r"^(.*?)\s+\[(?:PPSA|CUSA)\d{5}\]", re.I)
 ROLE_FIELDS = ("category", "apptype", "packagecategory", "packagetype", "contenttype", "pkgtype", "type", "kind")
 EXTRA_CONTENT = re.compile(
     r"\b(?:dlc|patch|update|add[- ]?on|additional content|addcont|ac|al|gp|gdp|"
-    r"ps[45](?:ac|al|dp)|0x0*(?:1b|1c|1e|21|22))\b", re.I,
+    r"ps[45](?:ac|al|dp|patch)|0x0*(?:1b|1c|1e|21|22))\b", re.I,
 )
 BASE_GAME = re.compile(r"\b(?:app|application|base|game|gd|gda|ps[45]gd)\b", re.I)
+PS4_PATCH = re.compile(r"\b(?:gp|gdp|ps4(?:dp|patch)|patch|update)\b", re.I)
+PS4_DLC = re.compile(r"\b(?:ac|al|ps4ac|ps4al|dlc|add[- ]?on|additional content|addcont)\b", re.I)
 WORK_DIRECTORY = "_workhard"
 APP_DIRECTORY = Path(sys.executable).parent if getattr(sys, "frozen", False) else BASE
 LOCAL_CLI_DIRECTORY = APP_DIRECTORY / "tools" / "fpkg-cli"
@@ -163,14 +165,28 @@ def parse_metadata(raw, path):
         return next((values[key] for key in keys if values.get(key)), None)
 
     content_id = get("contentid", "pkgcontentid")
-    identifier = TITLE_ID.search(get("titleid", "nptitleid") or content_id or "")
+    explicit_id = TITLE_ID.search(get("titleid", "nptitleid") or "")
+    content_title = TITLE_ID.search(content_id or "")
+    identifier = explicit_id or content_title
     # fpkg-cli reports the container format and the content role on separate lines.
     roles = [values[key] for key in ROLE_FIELDS if key in values]
-    if any(EXTRA_CONTENT.search(role) for role in roles):
+    extra = any(EXTRA_CONTENT.search(role) for role in roles)
+    if extra and not (identifier and identifier[0].upper().startswith("CUSA")):
         return None
     if not identifier:
         raise MetadataError("В выводе fpkg-cli отсутствует Title ID")
-    if not any(BASE_GAME.search(role) for role in roles):
+    kind = "base"
+    if extra:
+        category = get("category", "apptype") or " ".join(roles)
+        if PS4_PATCH.search(category):
+            kind = "patch"
+        elif PS4_DLC.search(category):
+            kind = "dlc"
+        else:
+            return None
+        if explicit_id and content_title and explicit_id[0].upper() != content_title[0].upper():
+            raise MetadataError("Title ID и Content ID дополнительного PKG относятся к разным играм")
+    elif not any(BASE_GAME.search(role) for role in roles):
         raise MetadataError("fpkg-cli не подтвердил, что это самостоятельная игра")
     title_id = identifier[0].upper()
     version = get("contentversion", "appver", "applicationversion", "version")
@@ -178,10 +194,12 @@ def parse_metadata(raw, path):
         match = re.search(r"\b[0-9]{1,4}(?:\.[0-9]{1,4}){1,3}\b", version)
         version = match[0] if match else None
     filename = FILE_TITLE.match(path.stem)
+    title = get("title", "titleen", "titleenus", "titlenameenus", "defaulttitle", "name")
+    if kind == "dlc" and (LANGUAGE_PACK.search(title or "") or LANGUAGE_PACK.search(path.stem)):
+        return None
     return {
-        "title_id": title_id, "platform": "PS5" if title_id.startswith("PPSA") else "PS4",
-        "title": (get("title", "titleen", "titleenus", "titlenameenus", "defaulttitle", "name") or
-                  (filename[1].strip() if filename else title_id))[:256],
+        "title_id": title_id, "platform": "PS5" if title_id.startswith("PPSA") else "PS4", "kind": kind,
+        "title": (title or (path.stem if kind != "base" else filename[1].strip() if filename else title_id))[:256],
         "version": version, "firmware": decode_bcd(get("requiredfirmware", "requiredsystemsoftwareversion",
                                                      "requiredsystemsoftware", "systemsoftwareversion", "systemver",
                                                      "systemversion", "firmware")),
@@ -191,7 +209,9 @@ def parse_metadata(raw, path):
 
 
 def read_metadata(executable, path, stop):
-    first = "ps4-info" if re.search(r"CUSA\d{5}", path.name, re.I) else "pkg-info"
+    with path.open("rb") as source:
+        ps4 = source.read(4) == b"\x7fCNT"
+    first = "ps4-info" if ps4 or re.search(r"CUSA\d{5}", path.name, re.I) else "pkg-info"
     commands = (first, "ps4-info" if first == "pkg-info" else "pkg-info")
     parse_error = None
     for command in commands:
@@ -213,6 +233,9 @@ def read_metadata(executable, path, stop):
         else:
             logger.info("%r — fpkg-cli %s: код 0, %s %s", path.name, command,
                         metadata["title_id"], metadata["version"] or "версия неизвестна")
+            if metadata["kind"] != "base":
+                logger.info("%r — %s PS4, Content ID: %s", path.name,
+                            "обновление" if metadata["kind"] == "patch" else "DLC", metadata["content_id"] or "не указан")
         return metadata
     raise parse_error or MetadataError("fpkg-cli не смог прочитать PKG")
 
@@ -244,6 +267,26 @@ def import_file(db, root_id, relpath, metadata, info):
         (root_id, relpath, info.st_size, info.st_mtime_ns, record),
     )
     return ("updated" if game else "added"), game_id, record
+
+
+def import_ps4_extra(db, root_id, relpath, metadata, info):
+    db.execute(
+        """INSERT INTO ps4_extras (root_id,relpath,size_bytes,mtime,title_id,kind,title,content_id,version,firmware)
+           VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(root_id,relpath) DO UPDATE SET
+               size_bytes=excluded.size_bytes,mtime=excluded.mtime,title_id=excluded.title_id,kind=excluded.kind,
+               title=excluded.title,content_id=excluded.content_id,version=excluded.version,
+               firmware=excluded.firmware,available=1""",
+        (root_id, relpath, info.st_size, info.st_mtime_ns,
+         *(metadata[key] for key in ("title_id", "kind", "title", "content_id", "version", "firmware"))),
+    )
+
+
+PKG_TABLES = ("files", "ps4_extras")
+
+
+def mark_unavailable(db, root_id, relpath):
+    for table in PKG_TABLES:
+        db.execute(f"UPDATE {table} SET available=0 WHERE root_id=? AND relpath=?", (root_id, relpath))
 
 
 def scan(database, state, stop, publish, *, force=False):
@@ -302,8 +345,7 @@ def scan(database, state, stop, publish, *, force=False):
                     if stop.is_set():
                         return
                     with database.connect() as db:
-                        db.execute("UPDATE files SET available=0 WHERE root_id=? AND relpath=?",
-                                   (root["id"], relative))
+                        mark_unavailable(db, root["id"], relative)
                     state["errors"] += 1
                     if len(state["issues"]) < 100:
                         message = str(error) if isinstance(error, (MetadataError, TimeoutError)) else "ошибка чтения файла"
@@ -319,35 +361,46 @@ def scan(database, state, stop, publish, *, force=False):
             db.execute("UPDATE roots SET state=? WHERE id=?",
                        ("partial" if walk_errors else "online", root["id"]))
             if not walk_errors:
-                missing = [row["id"] for row in db.execute("SELECT id,relpath FROM files WHERE root_id=?", (root["id"],))
-                           if row["relpath"] not in seen]
-                db.executemany("UPDATE files SET available=0 WHERE id=?", [(item,) for item in missing])
+                for table in PKG_TABLES:
+                    missing = [(root["id"], row["relpath"]) for row in db.execute(
+                        f"SELECT relpath FROM {table} WHERE root_id=? AND available=1", (root["id"],)
+                    ) if row["relpath"] not in seen]
+                    db.executemany(f"UPDATE {table} SET available=0 WHERE root_id=? AND relpath=?", missing)
     state.pop("current", None)
 
 
 def scan_file(database, root_id, base, path, relative, executable, stop, force, art):
     if path.is_symlink() or not path.resolve().is_relative_to(base):
+        with database.connect() as db:
+            mark_unavailable(db, root_id, relative)
         return "skipped"
     before = path.stat()
     if not stat.S_ISREG(before.st_mode) or before.st_size == 0 or time.time() - before.st_mtime < 2:
         raise MetadataError("Пустой файл, копирование или запись ещё не завершены")
-    with database.connect() as db:
-        existing = db.execute("SELECT id,size_bytes,mtime FROM files WHERE root_id=? AND relpath=?",
-                              (root_id, relative)).fetchone()
-        if not force and existing and (existing["size_bytes"], existing["mtime"]) == (before.st_size, before.st_mtime_ns):
-            db.execute("UPDATE files SET available=1 WHERE id=?", (existing["id"],))
-            return "skipped"
+    if not force:
+        with database.connect() as db:
+            for table in PKG_TABLES:
+                cached = db.execute(
+                    f"UPDATE {table} SET available=1 WHERE root_id=? AND relpath=? AND size_bytes=? AND mtime=?",
+                    (root_id, relative, before.st_size, before.st_mtime_ns),
+                )
+                if cached.rowcount:
+                    return "skipped"
     metadata = read_metadata(executable, path, stop)
     after = path.stat()
     if stop.is_set():
         raise TimeoutError("Чтение прервано")
     if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
         raise MetadataError("Файл изменился во время чтения")
-    if metadata is None:
-        with database.connect() as db:
-            db.execute("UPDATE files SET available=0 WHERE root_id=? AND relpath=?", (root_id, relative))
-        return "skipped"
     with database.connect() as db:
+        if metadata is None:
+            mark_unavailable(db, root_id, relative)
+            return "skipped"
+        if metadata["kind"] != "base":
+            db.execute("DELETE FROM files WHERE root_id=? AND relpath=?", (root_id, relative))
+            import_ps4_extra(db, root_id, relative, metadata, after)
+            return "updated"
+        db.execute("DELETE FROM ps4_extras WHERE root_id=? AND relpath=?", (root_id, relative))
         result, game_id, build_id = import_file(db, root_id, relative, metadata, after)
     if not stop.is_set():
         enrich_import(database, game_id, build_id, executable, path, metadata, art, stop)

@@ -19,6 +19,10 @@ ART_NAME = re.compile(r"[a-f0-9]{64}\.(?:webp|png|jpg)")
 PS_STORE_HOST = "image.api.playstation.com"
 PS_STORE_SOURCE = "PlayStation Store"
 PS_STORE_PRODUCT = re.compile(r"[A-Z]{2}[0-9]{4}-(?:PPSA|CUSA)[0-9]{5}_00-[A-Z0-9]{16}")
+LANGUAGE_PACK = re.compile(
+    r"language pack|voice pack|voice[- ]?over pack|audio language|языков\w* пакет|пакет (?:язык\w*|озвучки)|"
+    r"sprachpaket|pack de (?:idiomas?|langues?)|pacote de idioma|pacchetto lingu|言語パック|语言包|語言包|언어 팩", re.I,
+)
 IMAGE_HOSTS = {"images.igdb.com", "cdn.steamgriddb.com", PS_STORE_HOST}
 
 
@@ -258,6 +262,80 @@ def playstation_details(props, content_id, locale):
 
 def playstation_description(page, content_id, locale="en-us"):
     return playstation_details(playstation_props(page, content_id), content_id, locale)
+
+
+def playstation_dlc_candidates(props, content_id):
+    platform = "PS5" if "-PPSA" in content_id else "PS4"
+    addons = playstation_cache(props, "add-ons")
+    related = []
+    for key, value in addons.get("ROOT_QUERY", {}).items():
+        if key.startswith("addOnProductsByProductIdRetrieve(") and f'"productId":"{content_id}"' in key:
+            related.extend(value.get("addOnProducts", []))
+    locale = props.get("locale")
+    if locale not in ("ru-ua", "en-us", "en-gb", "ja-jp", "en-hk"):
+        locale = "en-us"
+    candidates = []
+    for ref in dict.fromkeys(item.get("__ref", "") for item in related):
+        item = addons.get(ref, {})
+        product_id = item.get("id")
+        name = item.get("name")
+        if (product_id != content_id and playstation_url(product_id) and isinstance(name, str) and name.strip()
+                and platform in (item.get("platforms") or [])
+                and item.get("storeDisplayClassification") != "LANGUAGE_PACK"
+                and not any(LANGUAGE_PACK.search(text or "") for text in (name, item.get("invariantName")))):
+            candidates.append({"id": product_id, "kind": "dlc", "name": name[:256], "description": None,
+                               "content_id": product_id, "locale": locale})
+
+    editions = playstation_cache(props, "upsells")
+    product = editions.get("Product:" + content_id, {})
+    concept = editions.get((product.get("concept") or {}).get("__ref"), {})
+    products = [editions.get(ref.get("__ref"), {}) for ref in concept.get("products", [])]
+    standard = next((item for item in products if (item.get("edition") or {}).get("type") == "STANDARD"
+                     and platform in (item.get("platforms") or [])), product)
+    names = (concept.get("name"), standard.get("name"), standard.get("invariantName"),
+             *((standard.get("edition") or {}).get("features") or []))
+    base_names = {comparable(name) for name in names if isinstance(name, str)}
+    base_names.update(("main game", "base game", "full game", "основная игра", "полная игра"))
+    for item in products:
+        edition = item.get("edition") or {}
+        name = edition.get("name")
+        edition_id = item.get("id")
+        if (not playstation_url(edition_id) or not isinstance(name, str) or not name.strip()
+                or platform not in (item.get("platforms") or [])
+                or item.get("storeDisplayClassification") in ("DEMO", "TRIAL")
+                or edition.get("type") == "STANDARD"):
+            continue
+        features = [feature.strip() for feature in (edition.get("features") or [])
+                    if isinstance(feature, str) and feature.strip() and comparable(feature) not in base_names
+                    and not LANGUAGE_PACK.search(feature)]
+        if features:
+            candidates.append({"id": edition_id, "kind": "edition", "name": name[:245],
+                               "description": "\n".join("• " + feature for feature in features)[:1000],
+                               "content_id": None, "locale": locale})
+    return candidates
+
+
+def playstation_dlc(client, content_id):
+    preferred = {"EP": "en-gb", "JP": "ja-jp", "HP": "en-hk"}.get(content_id[:2], "en-us")
+    failure = None
+    found = False
+    for locale in dict.fromkeys(("ru-ua", preferred, "en-us")):
+        url = playstation_url(content_id, locale)
+        try:
+            props = playstation_props(bounded_get(client, url, 3_000_000), content_id)
+            if props:
+                found = True
+                candidates = playstation_dlc_candidates(props, content_id)
+                if candidates:
+                    return candidates
+        except httpx.HTTPStatusError as error:
+            if not (error.response.is_redirect or error.response.status_code in (404, 410)):
+                failure = error
+        except (httpx.HTTPError, KeyError, TypeError, ValueError, AttributeError) as error:
+            failure = error
+    if not found and failure:
+        raise failure
+    return []
 
 
 def russian_concept(client, product_props, content_id):

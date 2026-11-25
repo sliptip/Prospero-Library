@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { ArrowDownUp, ArrowRight, ChevronDown, Gamepad2, Grid2X2, GripVertical, LibraryBig, List, Plus, SlidersHorizontal, X } from 'lucide-react'
 import { Game, gameCount, russianSupport, sizeText, stored } from './model'
 
-type Props = { games: Game[]; query: string; open: (game: Game) => void; add: () => void; swap: (source: number, target: number) => Promise<void> }
+type Props = { games: Game[]; hideRecent: boolean; query: string; open: (game: Game) => void; add: () => void; swap: (source: number, target: number) => Promise<void> }
 type Sort = 'added_at' | 'title' | 'release_date' | 'size_bytes' | 'update' | 'manual'
 type Filters = { dlc: boolean; ru_text: boolean; ru_audio: boolean; update: boolean }
 const defaults = { dlc: false, ru_text: false, ru_audio: false, update: false }
@@ -39,7 +39,7 @@ function Hero({ game, open }: { game: Game; open: () => void }) {
   </section>
 }
 
-export function Library({ games, query, open, add, swap }: Props) {
+export function Library({ games, hideRecent, query, open, add, swap }: Props) {
   const [platform, setPlatform] = useState(() => stored<'all' | 'PS5' | 'PS4'>('prospero-platform', 'all'))
   const [mode, setMode] = useState(() => stored<'grid' | 'list'>('prospero-mode', 'grid'))
   const [sort, setSort] = useState(() => stored<Sort>('prospero-sort', 'added_at'))
@@ -57,7 +57,7 @@ export function Library({ games, query, open, add, swap }: Props) {
   }, [platform, mode, sort, asc, filters])
 
   const search = matchText(query.trim())
-  const recent = games.toSorted((a, b) => b.added_at.localeCompare(a.added_at))[0]
+  const recent = hideRecent ? undefined : games.toSorted((a, b) => b.added_at.localeCompare(a.added_at))[0]
   const activeFilters = Object.values(filters).filter(Boolean).length
   function matchesLanguages(game: Game) {
     if (!filters.ru_text && !filters.ru_audio) return true
@@ -67,7 +67,8 @@ export function Library({ games, query, open, add, swap }: Props) {
   const filtered = games.filter(game => (
     (!search || matchText(game.title + ' ' + game.title_id).includes(search)) &&
     (platform === 'all' || game.platform === platform) &&
-    (!filters.dlc || game.dlc.some(item => item.status === 'verified' || item.status === 'configured')) &&
+    (!filters.dlc || game.dlc.some(item => item.status === 'verified' || item.status === 'configured') ||
+      game.local_packages.some(item => item.kind === 'dlc' && item.file_state === 'online')) &&
     matchesLanguages(game) &&
     (!filters.update || game.patch.state === 'available')
   )).sort((a, b) => {
@@ -178,10 +179,10 @@ export function Library({ games, query, open, add, swap }: Props) {
             </div>
             <div className="tile-text">
               <strong>{game.title}</strong>
-              {mode === 'list' ? <span>{game.edition || game.title_id}</span> : <span className="tile-meta"><span>{game.version || '—'}</span>
+              {mode === 'list' ? <span>{game.edition || game.title_id}</span> : <span className="tile-meta"><span>{game.collection_version || '—'}</span>
                 {game.dlc.some(dlc => dlc.status === 'configured' || dlc.status === 'verified') && <span>{game.dlc.filter(dlc => dlc.status === 'configured' || dlc.status === 'verified').length} DLC</span>}</span>}
             </div>
-            {mode === 'list' && <><span className="platform">{game.platform}</span><span className="mono row-version">{game.version || '—'}</span>
+            {mode === 'list' && <><span className="platform">{game.platform}</span><span className="mono row-version">{game.collection_version || '—'}</span>
               <span className="row-size">{sizeText(game.size_bytes)}</span><ArrowRight size={17} className="row-arrow" /></>}
           </button>
           {manual && <button type="button" className="icon-button reorder-handle" draggable={!savingOrder}

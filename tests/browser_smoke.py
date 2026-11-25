@@ -69,6 +69,22 @@ def run(screenshots, browser_executable):
             expect(page.get_by_role("button", name="Открыть карточку")).to_be_visible()
             capture(page, screenshots, "Prospero-Library.png")
 
+            page.get_by_role("link", name="Настройки").click()
+            hide_recent = page.get_by_label("Скрывать недавно добавленную игру")
+            with page.expect_response("**/api/settings/library"):
+                hide_recent.check()
+            expect(hide_recent).to_be_checked()
+            page.get_by_role("link", name="Библиотека").click()
+            page.reload(wait_until="networkidle")
+            expect(page.get_by_role("button", name="Открыть карточку")).to_have_count(0)
+            expect(page.get_by_role("heading", name="Коллекция", exact=True)).to_be_visible()
+            page.get_by_role("link", name="Настройки").click()
+            with page.expect_response("**/api/settings/library"):
+                hide_recent.uncheck()
+            expect(hide_recent).not_to_be_checked()
+            page.get_by_role("link", name="Библиотека").click()
+            expect(page.get_by_role("button", name="Открыть карточку")).to_be_visible()
+
             page.get_by_role("button", name="Сканировать", exact=True).click()
             report = page.get_by_role("dialog", name="Сканирование коллекции")
             expect(report.get_by_text("Укажите папки коллекции в настройках")).to_be_visible()
@@ -204,6 +220,23 @@ def run(screenshots, browser_executable):
             page.get_by_role("textbox", name="Примечания").fill("Проверка сохранения в SQLite")
             editor = page.get_by_role("dialog", name="Редактировать карточку")
             expect(editor.get_by_role("combobox", name="Русский текст").locator("option:checked")).to_have_text("Авто · Есть")
+            expansion = "JP0101-PPSA35399_00-EXPANSION0000001"
+            page.route("**/api/games/1/store-dlc", lambda route: route.fulfill(json=[
+                {"id": expansion, "content_id": expansion, "kind": "dlc", "name": "DLC из магазина",
+                 "description": None, "locale": "ru-ua"},
+                {"id": "bonus", "content_id": None, "kind": "edition", "name": "Special Edition",
+                 "description": "Цифровой артбук", "locale": "ru-ua"},
+            ]))
+            page.route("**/api/store-dlc/" + expansion + "?*", lambda route:
+                       route.fulfill(json={"description": "Описание загружено из магазина"}))
+            editor.get_by_role("button", name="Найти в магазине").click()
+            choices = editor.get_by_role("list", name="Результаты PlayStation Store")
+            expect(choices.get_by_text("Состав издания")).to_be_visible()
+            choices.get_by_role("button", name="Добавить Special Edition").click()
+            expect(editor.get_by_role("textbox", name="Название DLC").last).to_have_value("Бонусы Special Edition")
+            choices.get_by_role("button", name="Добавить DLC из магазина").click()
+            expect(editor.get_by_role("textbox", name="Название DLC").last).to_have_value("DLC из магазина")
+            expect(editor.get_by_role("textbox", name="Описание", exact=True).last).to_have_value("Описание загружено из магазина")
             editor.get_by_role("button", name="Добавить локализацию").click()
             editor.get_by_role("button", name="Добавить локализацию").click()
             groups = editor.locator(".localization-form")
@@ -220,6 +253,8 @@ def run(screenshots, browser_executable):
             expect(page.get_by_text("Официальная (текст)", exact=True)).to_be_visible()
             expect(page.get_by_role("heading", name="Фанатская озвучка")).to_be_visible()
             expect(page.get_by_role("heading", name="Отдельный перевод")).to_be_visible()
+            expect(page.get_by_text("Бонусы Special Edition", exact=True)).to_be_visible()
+            expect(page.get_by_text("Описание загружено из магазина", exact=True)).to_be_visible()
 
             page.get_by_role("button", name="Оформление").click()
             upload = page.get_by_label("Загрузить обложку")

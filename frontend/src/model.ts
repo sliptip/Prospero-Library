@@ -1,6 +1,11 @@
 export type Platform = 'PS4' | 'PS5'
 export type DlcStatus = 'configured' | 'verified' | 'unknown' | 'absent'
 export type Dlc = { name: string; description: string | null; content_id: string | null; status: DlcStatus }
+export type StoreDlc = Omit<Dlc, 'status'> & { id: string; kind: 'dlc' | 'edition'; locale: string }
+export type LocalPackage = {
+  kind: 'patch' | 'dlc'; title: string; version: string | null; firmware: string | null;
+  size_bytes: number; content_id: string | null; relpath: string; file_state: 'online' | 'offline';
+}
 export type StoreLocalization = { screen: string[] | null; audio: string[] | null }
 export type CustomLocalization = { source: string | null; interface: string | null; subtitles: string | null; audio: string | null }
 export type Patch = { version: string; firmware: string | null; source: string; checked_at: string; size_bytes: number | null }
@@ -12,13 +17,14 @@ export type PatchInfo = {
 }
 export type Game = {
   id: number; title: string; platform: Platform; title_id: string; edition: string | null;
-  version: string | null; firmware: string | null; size_bytes: number | null; release_date: string | null;
+  version: string | null; collection_version: string | null; firmware: string | null; size_bytes: number | null; release_date: string | null;
   added_at: string; ru_text: boolean | null; ru_audio: boolean | null;
   text_languages: string | null; audio_languages: string | null; localization_source: string | null;
   official_localization: StoreLocalization | null; custom_localizations: CustomLocalization[];
   notes: string | null; manifest_uri: string | null; version_uri: string | null; dlc: Dlc[]; patch: PatchInfo; cover: string | null; background: string | null;
   cover_source: string | null; background_source: string | null; file_state: 'online' | 'offline' | 'unlinked';
   package_fields: string[]; package_identity: { platform: Platform; title_id: string } | null; content_id: string | null;
+  local_packages: LocalPackage[];
 }
 export type GameAbout = {
   description: string | null; language: 'ru' | 'en'; publisher: string | null; genres: string[];
@@ -26,7 +32,7 @@ export type GameAbout = {
   localization?: StoreLocalization;
 }
 export type Root = { id: number; path: string; state: 'offline' | 'online' | 'unknown' | 'partial' }
-export type Settings = { cli_path: string; cli_local: boolean; ps4_firmware: string; ps5_firmware: string; roots: Root[]; providers: Record<string, boolean> }
+export type Settings = { cli_path: string; cli_local: boolean; hide_recent: boolean; ps4_firmware: string; ps5_firmware: string; roots: Root[]; providers: Record<string, boolean> }
 export type Job = {
   id: number; kind: 'scan' | 'updates'; status: 'running' | 'cancelling' | 'done' | 'cancelled' | 'error' | 'interrupted';
   report: { current?: string; found: number; added: number; updated: number; skipped: number; errors: number; issues: string[] };

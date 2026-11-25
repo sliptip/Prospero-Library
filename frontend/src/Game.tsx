@@ -3,7 +3,7 @@ import type { ChangeEvent, FormEvent, ReactNode } from 'react'
 import { ArrowLeft, Box, Download, ExternalLink, ImagePlus, Info, Pencil, Plus, RefreshCw, Trash2, X } from 'lucide-react'
 import { Cover } from './Library'
 import { api, compatiblePatchText, dateText, dlcLabel, fileLabel, json, languageList, localText, patchArchive, patchFirmwareText, patchLabel, russianSupport, sizeText, unknown } from './model'
-import type { ArtCandidate, CustomLocalization, Dlc, Game, GameAbout, PatchInfo, Platform, StoreLocalization } from './model'
+import type { ArtCandidate, CustomLocalization, Dlc, Game, GameAbout, LocalPackage, PatchInfo, Platform, StoreDlc, StoreLocalization } from './model'
 
 export function Dialog({ title, close, children, wide = false }: { title: string; close: () => void; children: ReactNode; wide?: boolean }) {
   const ref = useRef<HTMLDialogElement>(null)
@@ -28,6 +28,17 @@ const enumBool = (value?: boolean | null) => value === true ? 'yes' : value === 
 const optionalBool = (value: string) => value === '' ? null : value === 'yes'
 const languageOption = (value: boolean | null) => value === null ? 'Не указано' : value ? 'Авто · Есть' : 'Авто · Нет'
 
+function storeDlcName(item: StoreDlc) {
+  return item.kind === 'edition' ? 'Бонусы ' + item.name : item.name
+}
+
+function matchesStoreDlc(item: Dlc, candidate: StoreDlc) {
+  if (candidate.content_id && item.content_id) return item.content_id === candidate.content_id
+  const name = item.name.trim().toLocaleLowerCase()
+  return name === storeDlcName(candidate).toLocaleLowerCase() ||
+    (candidate.kind === 'edition' && name.replace(/ dlc$/, '') === candidate.name.toLocaleLowerCase())
+}
+
 export function GameEditor({ game, close, save }: { game?: Game; close: () => void; save: (game: Game) => void }) {
   const [platform, setPlatform] = useState<Platform>(game?.platform || 'PS5')
   const [editPackage, setEditPackage] = useState(false)
@@ -37,6 +48,10 @@ export function GameEditor({ game, close, save }: { game?: Game; close: () => vo
   }
   const [fields, setFields] = useState(savedFields)
   const [dlc, setDlc] = useState<Dlc[]>(game?.dlc || [])
+  const [storeDlc, setStoreDlc] = useState<StoreDlc[] | null>(null)
+  const [storeError, setStoreError] = useState('')
+  const [storeLoading, setStoreLoading] = useState(false)
+  const [addingDlc, setAddingDlc] = useState<string | null>(null)
   const [custom, setCustom] = useState<CustomLocalization[]>(game?.custom_localizations || [])
   const [ruText, setRuText] = useState(enumBool(game?.ru_text))
   const [ruAudio, setRuAudio] = useState(enumBool(game?.ru_audio))
@@ -58,8 +73,38 @@ export function GameEditor({ game, close, save }: { game?: Game; close: () => vo
     setCustom(groups => groups.map((group, i) => i === index ? { ...group, [key]: value } : group))
   }
 
+  async function findDlc() {
+    if (!game) return
+    setStoreLoading(true)
+    setStoreError('')
+    try { setStoreDlc(await api<StoreDlc[]>(`/games/${game.id}/store-dlc`)) }
+    catch (failure) { setStoreError((failure as Error).message) }
+    finally { setStoreLoading(false) }
+  }
+
+  async function addStoreDlc(item: StoreDlc) {
+    setAddingDlc(item.id)
+    let description = item.description
+    if (item.content_id && !description) {
+      const url = '/store-dlc/' + encodeURIComponent(item.content_id) + '?locale=' + encodeURIComponent(item.locale)
+      const details = await api<{ description: string | null }>(url).catch(() => null)
+      description = details?.description ?? null
+    }
+    setDlc(items => {
+      const existing = items.find(row => matchesStoreDlc(row, item))
+      if (existing) return items.map(row => row === existing ? {
+        ...row, description: item.kind === 'edition' ? description : row.description || description,
+        content_id: row.content_id || item.content_id,
+      } : row)
+      if (items.length >= 100) return items
+      return [...items, { name: storeDlcName(item), description, content_id: item.content_id, status: 'unknown' }]
+    })
+    setAddingDlc(null)
+  }
+
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    if (addingDlc) return
     setError('')
     setBusy(true)
     const data = new FormData(event.currentTarget)
@@ -97,7 +142,8 @@ export function GameEditor({ game, close, save }: { game?: Game; close: () => vo
           minLength={9} maxLength={9} placeholder={shownPlatform === 'PS5' ? 'PPSA00000' : 'CUSA00000'} /></label>
         <label className="field">Издание<input name="edition" maxLength={256} defaultValue={game?.edition || ''} /></label>
         <label className="field">Дата выхода<input type="date" name="release_date" defaultValue={game?.release_date || ''} /></label>
-        <label className="field">Версия в коллекции<input {...input('version')} placeholder={shownPlatform === 'PS5' ? '01.000.000' : '01.00'} /></label>
+        <label className="field">{shownPlatform === 'PS4' ? 'Версия основной игры' : 'Версия в коллекции'}
+          <input {...input('version')} placeholder={shownPlatform === 'PS5' ? '01.000.000' : '01.00'} /></label>
         <label className="field">Требуемая прошивка игры<input {...input('firmware')} placeholder="13.40" /></label>
         <label className="field">Размер в байтах<input {...input('size_bytes')} type="number" min="1" step="1" /></label>
         <span />
@@ -137,7 +183,37 @@ export function GameEditor({ game, close, save }: { game?: Game; close: () => vo
         </div>
         <label className="field span-two">Примечания<textarea name="notes" rows={3} maxLength={12000} defaultValue={game?.notes || ''} /></label>
         <div className="span-two dlc-editor">
-          <div className="section-heading"><h3>Дополнения</h3><button className="button outlined compact" type="button" onClick={() => setDlc([...dlc, { ...blankDlc }])} disabled={dlc.length >= 100}><Plus size={15} /> Добавить DLC</button></div>
+          <div className="section-heading dlc-actions">
+            <h3>Дополнения</h3>
+            <div className="button-row">
+              {game?.content_id && <button className="button outlined compact" type="button"
+                onClick={() => storeDlc ? setStoreDlc(null) : void findDlc()} disabled={storeLoading || !!addingDlc}
+                aria-expanded={storeDlc !== null}>
+                {storeLoading ? 'Ищу…' : storeDlc ? 'Скрыть результаты' : 'Найти в магазине'}
+              </button>}
+              <button className="button outlined compact" type="button" onClick={() => setDlc([...dlc, { ...blankDlc }])}
+                disabled={dlc.length >= 100 || !!addingDlc}><Plus size={15} /> Добавить DLC</button>
+            </div>
+          </div>
+          {storeError && <p className="muted note" role="status">{storeError}</p>}
+          {storeDlc?.length === 0 && <p className="muted note" role="status">Магазин не показал дополнений или состава изданий для этой игры.</p>}
+          {!!storeDlc?.length && <ul className="store-dlc-list" aria-label="Результаты PlayStation Store">
+            {storeDlc.map(item => {
+              const existing = dlc.find(row => matchesStoreDlc(row, item))
+              const replaceEdition = !!existing && item.kind === 'edition' && item.description !== existing.description
+              const canFill = !!existing && ((!existing.content_id && !!item.content_id) || replaceEdition)
+              const action = replaceEdition ? 'Вставить состав' : canFill ? 'Заполнить' : existing ? 'В карточке' : 'Добавить'
+              return <li key={item.kind + item.id}>
+                <div><small className="muted">{item.kind === 'edition' ? 'Состав издания' : 'DLC'}</small>
+                  <strong>{item.name}</strong>
+                  {item.description && <p>{item.description}</p>}</div>
+                <button type="button" className="text-button" aria-label={action + ' ' + item.name}
+                  disabled={!!addingDlc || (existing ? !canFill : dlc.length >= 100)} onClick={() => void addStoreDlc(item)}>
+                  {addingDlc === item.id ? 'Загружаю…' : action}
+                </button>
+              </li>
+            })}
+          </ul>}
           {dlc.map((item, index) => <div className="dlc-form" key={index}>
             <label className="field">Название DLC<input value={item.name} required maxLength={256}
               onChange={event => setDlc(dlc.map((other, i) => i === index ? { ...other, name: event.target.value } : other))} /></label>
@@ -154,7 +230,7 @@ export function GameEditor({ game, close, save }: { game?: Game; close: () => vo
         {error && <p className="error span-two" role="alert">{error}</p>}
       </div>
       <div className="dialog-footer"><button type="button" disabled={busy} className="button outlined" onClick={close}>Отмена</button>
-        <button className="button primary" disabled={busy}>{busy ? 'Сохраняю…' : 'Сохранить'}</button></div>
+        <button className="button primary" disabled={busy || !!addingDlc}>{busy ? 'Сохраняю…' : 'Сохранить'}</button></div>
     </form>
   </Dialog>
 }
@@ -166,6 +242,10 @@ function Meta({ name, children, className = '', title }: { name: string; childre
 export function CompatiblePatch({ patch }: { patch: PatchInfo }) {
   const text = compatiblePatchText(patch)
   return text && <Meta name={'Совместимый патч · ' + patch.target} className="mono">{text}</Meta>
+}
+
+function PackageFile({ item }: { item: LocalPackage }) {
+  return <p title={item.relpath}>{item.relpath.split('/').at(-1)} · {sizeText(item.size_bytes)} · {fileLabel[item.file_state]}</p>
 }
 
 type AboutState = { status: 'loading' } | { status: 'ready'; game: GameAbout | null } | { status: 'error'; message: string }
@@ -206,6 +286,23 @@ export function GamePage({ game, back, edit, art, updates, updating, removed, on
   const languages = game.official_localization
   const russian = russianSupport(languages, game.custom_localizations, game.ru_text, game.ru_audio)
   const source = (russian.ruText || russian.ruAudio) && (game.localization_source || russian.source)
+  const localPatches = game.local_packages.filter(item => item.kind === 'patch')
+  const localDlc = game.local_packages.filter(item => item.kind === 'dlc')
+  const listedDlc = game.dlc.map(item => ({
+    title: item.name, description: item.description, label: dlcLabel[item.status],
+    files: localDlc.filter(file => file.content_id && file.content_id === item.content_id),
+  }))
+  const unlistedDlc = localDlc.filter(file => !file.content_id || !game.dlc.some(item => item.content_id === file.content_id))
+  const byContent = new Map<string, LocalPackage[]>()
+  for (const file of unlistedDlc) {
+    const key = file.content_id || file.relpath
+    const copies = byContent.get(key)
+    if (copies) copies.push(file)
+    else byContent.set(key, [file])
+  }
+  const dlc = [...listedDlc, ...[...byContent.values()].map(files => ({
+    title: files[0].title, description: null, label: 'PKG', files,
+  }))]
 
   useEffect(() => {
     const { id, content_id: contentId } = game
@@ -270,7 +367,9 @@ export function GamePage({ game, back, edit, art, updates, updating, removed, on
       <section className="panel">
         <h2>Игра в коллекции</h2>
         <dl className="meta-grid">
-          <Meta name="Версия" className="mono">{game.version}</Meta>
+          <Meta name={localPatches.length ? 'Версия основной игры' : 'Версия'} className="mono">{game.version}</Meta>
+          {localPatches.some(item => item.file_state === 'online' && item.version === game.collection_version) &&
+            <Meta name="Версия с патчем в коллекции" className="mono">{game.collection_version}</Meta>}
           <Meta name="Требуемая прошивка" className="mono">{game.firmware}</Meta>
           <Meta name="Размер">{game.size_bytes != null ? sizeText(game.size_bytes) : unknown}</Meta>
           <Meta name="На диске">{fileLabel[game.file_state]}</Meta>
@@ -294,11 +393,21 @@ export function GamePage({ game, back, edit, art, updates, updating, removed, on
           {(game.package_identity?.platform || game.platform) === 'PS5' ? 'ProsperoPatches' : 'OrbisPatches'} <ExternalLink size={13} />
         </a>
       </section>
-      {game.dlc.length > 0 && <section className="panel span-two">
-        <h2>Дополнения <span className="count-badge">{game.dlc.length}</span></h2>
-        <div className="dlc-list">{game.dlc.map((item, i) => <div className="dlc-row" key={i}>
-          <div className="dlc-icon"><Box size={19} /></div><div><strong>{item.name}</strong>{item.description && <p>{item.description}</p>}</div>
-          <span className="status-pill">{dlcLabel[item.status]}</span>
+      {localPatches.length > 0 && <section className="panel span-two">
+        <h2>Локальные патчи</h2>
+        <div className="dlc-list">{localPatches.map((item, i) => <div className="dlc-row" key={i}>
+          <div className="dlc-icon"><RefreshCw size={17} /></div>
+          <div><strong>{item.version ? 'Версия ' + item.version : 'Версия неизвестна'}</strong><PackageFile item={item} /></div>
+          {item.firmware && <span className="status-pill">FW {patchFirmwareText(item.firmware)}</span>}
+        </div>)}</div>
+      </section>}
+      {dlc.length > 0 && <section className="panel span-two">
+        <h2>Дополнения <span className="count-badge">{dlc.length}</span></h2>
+        <div className="dlc-list">{dlc.map((item, i) => <div className="dlc-row" key={i}>
+          <div className="dlc-icon"><Box size={19} /></div>
+          <div><strong>{item.title}</strong>{item.description && <p>{item.description}</p>}
+            {item.files.map((file, index) => <PackageFile key={index} item={file} />)}</div>
+          <span className="status-pill">{item.label}</span>
         </div>)}</div>
       </section>}
       <section className="panel">

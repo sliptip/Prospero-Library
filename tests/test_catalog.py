@@ -245,6 +245,60 @@ class LocalCatalogTest(unittest.TestCase):
             self.assertEqual(self.client.get("/api/games/1/about").json(), {**saved, "localization": languages})
         self.assertEqual(self.initial()["official_localization"], languages)
 
+    def test_store_dlc_excludes_language_packs_and_returns_optional_edition_contents(self):
+        base_id = self.initial()["content_id"]
+        expansion = "JP0101-PPSA35399_00-EXPANSION0000001"
+        language = "JP0101-PPSA35399_00-LANGUAGE00000001"
+        edition = "JP0101-PPSA35399_00-PREMIUM000000001"
+        foreign = "UP0101-CUSA12345_00-EXPANSION0000001"
+        concept = "Concept:10018186"
+        addon_items = {f"Product:{content_id}": {"id": content_id, "name": name, "platforms": [platform]}
+                       for content_id, name, platform in ((expansion, "Story expansion", "PS5"),
+                                                          (language, "Spanish Language Pack", "PS5"),
+                                                          (foreign, "Other platform", "PS4"))}
+        query = f'addOnProductsByProductIdRetrieve({{"pageArgs":{{"size":48}},"productId":"{base_id}"}})'
+        addons = {**addon_items, "ROOT_QUERY": {query: {"addOnProducts": [{"__ref": ref} for ref in addon_items]}}}
+        editions = {
+            f"Product:{base_id}": {"id": base_id, "name": "Base title", "platforms": ["PS5"],
+                                  "concept": {"__ref": concept}, "edition": {"type": "STANDARD", "features": ["Base title"]}},
+            concept: {"name": "Base title", "products": [{"__ref": f"Product:{edition}"}]},
+            f"Product:{edition}": {"id": edition, "platforms": ["PS5"],
+                                  "edition": {"name": "Midnight Edition", "features": ["Base title", "Digital Gallery"]}},
+        }
+
+        def page(content_id, **slots):
+            batarangs = {name: {"text": f"<script>{json.dumps({'cache': cache})}</script>"} for name, cache in slots.items()}
+            props = {"productId": content_id, "locale": "ru-ua", "batarangs": batarangs}
+            payload = json.dumps({"props": {"pageProps": props}}).replace("<", r"\u003c")
+            return f'<script id="__NEXT_DATA__">{payload}</script>'.encode()
+
+        description = {"id": expansion, "descriptions": [{"type": "LONG", "value": "Описание дополнения"}]}
+        responses = {base_id: page(base_id, **{"add-ons": addons, "upsells": editions}),
+                     expansion: page(expansion, info={f"Product:{expansion}": description})}
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(200, content=responses[request.url.path.split("/")[-1]])
+        )
+        clients = [httpx.Client(transport=transport), httpx.Client(transport=transport)]
+        with patch("backend.main.httpx.Client", side_effect=clients):
+            candidates = self.client.get("/api/games/1/store-dlc")
+            self.assertEqual(candidates.status_code, 200, candidates.text)
+            items = candidates.json()
+            self.assertEqual([(row["kind"], row["name"]) for row in items],
+                             [("dlc", "Story expansion"), ("edition", "Midnight Edition")])
+            self.assertEqual(items[1]["description"], "• Digital Gallery")
+            self.assertIsNone(items[1]["content_id"])
+            details = self.client.get(f"/api/store-dlc/{expansion}?locale=ru-ua")
+            self.assertEqual(details.json(), {"description": "Описание дополнения"})
+        self.assertEqual(len(self.initial()["dlc"]), 2)
+
+    def test_hide_recent_preference_survives_restart_and_settings_edits(self):
+        self.assertFalse(self.client.get("/api/settings").json()["hide_recent"])
+        self.assertTrue(self.client.patch("/api/settings/library", json={"hide_recent": True}).json()["hide_recent"])
+        self.assertTrue(self.client.put("/api/settings", json={"cli_path": "fpkg-cli"}).json()["hide_recent"])
+        with TestClient(create_app(self.data), base_url="http://localhost") as reopened:
+            self.assertTrue(reopened.get("/api/settings").json()["hide_recent"])
+        self.assertFalse(self.client.patch("/api/settings/library", json={"hide_recent": False}).json()["hide_recent"])
+
     def test_custom_localization_groups_survive_unrelated_edits_and_backup(self):
         groups = [{"source": "Команда перевода", "interface": None, "subtitles": "Русский", "audio": None},
                   {"source": None, "interface": None, "subtitles": None, "audio": "Русский, Украинский"}]
@@ -271,6 +325,7 @@ class LocalCatalogTest(unittest.TestCase):
         file = older / "library.db"
         with sqlite3.connect(self.data / "library.db") as current, sqlite3.connect(file) as legacy:
             current.backup(legacy)
+            legacy.execute("DROP TABLE ps4_extras")
             legacy.execute("DROP TABLE custom_localizations")
             legacy.execute("DROP TABLE store_about")
             legacy.execute("PRAGMA user_version = 1")
@@ -285,7 +340,7 @@ class LocalCatalogTest(unittest.TestCase):
         self.assertEqual(self.initial()["notes"], "Проверка старой библиотеки")
         for path in (file, self.data / "library.db"):
             with sqlite3.connect(path) as db:
-                self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 3)
+                self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 4)
                 self.assertEqual(db.execute("SELECT count(*) FROM store_about").fetchone()[0], 0)
                 self.assertEqual(db.execute("SELECT count(*) FROM custom_localizations").fetchone()[0], 0)
 
@@ -293,14 +348,28 @@ class LocalCatalogTest(unittest.TestCase):
         content_id = self.initial()["content_id"]
         cached = {"language": "ru", "description": "Описание в старой базе"}
         with sqlite3.connect(self.data / "library.db") as db:
+            db.execute("DROP TABLE ps4_extras")
             db.execute("DROP TABLE custom_localizations")
             db.execute("PRAGMA user_version = 2")
             db.execute("INSERT INTO store_about VALUES (?,?,?)", (content_id, "ru", json.dumps(cached)))
         with TestClient(create_app(self.data), base_url="http://localhost") as reopened:
             self.assertEqual(reopened.get("/api/games/1").json()["custom_localizations"], [])
         with sqlite3.connect(self.data / "library.db") as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 3)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 4)
             self.assertEqual(json.loads(db.execute("SELECT details FROM store_about").fetchone()[0]), cached)
+
+    def test_version_three_backup_restores_and_migrates(self):
+        legacy = self.root / "previous.db"
+        with sqlite3.connect(self.data / "library.db") as current, sqlite3.connect(legacy) as old:
+            current.backup(old)
+            old.execute("DROP TABLE ps4_extras")
+            old.execute("PRAGMA user_version=3")
+        name = "prospero-20261125-130000-000000.zip"
+        with ZipFile(self.data / "backups" / name, "w") as archive:
+            archive.write(legacy, "library.db")
+        restored = self.client.post("/api/backups/restore", json={"name": name})
+        self.assertEqual(restored.status_code, 200, restored.text)
+        self.assertEqual(self.initial()["local_packages"], [])
 
     def test_playstation_store_art_preserves_bytes_and_backup(self):
         content_id = self.initial()["content_id"]
@@ -605,6 +674,66 @@ class LocalCatalogTest(unittest.TestCase):
             self.assertEqual((resumed["found"], resumed["added"], parse.call_count), (3, 0, 3))
             restored = self.client.get(f"/api/games/{games['CUSA10001']['id']}").json()
             self.assertEqual(restored["file_state"], "online")
+
+    def test_scan_ps4_base_patch_and_dlc_in_one_folder(self):
+        folder = self.root / "PS4"
+        folder.mkdir()
+        content_id = "EP0101-CUSA12345_00-BASE000000000001"
+        examples = {
+            "01 patch.pkg": f"Title: Example\nTitle ID: CUSA12345\nContent ID: {content_id}\nCategory: gp\nVersion: 01.10",
+            "02 dlc.pkg": "Title: Bonus level\nContent ID: EP0101-CUSA12345_00-EXPANSION0000001\nCategory: ac\nVersion: 01.00",
+            "03 language.pkg": "Title: French Language Pack\nContent ID: EP0101-CUSA12345_00-LANGUAGE00000001\nCategory: ac",
+            "04 orphan.pkg": "Title ID: CUSA12346\nCategory: gp\nVersion: 02.00",
+            "05 old update.pkg": f"Title ID: CUSA12345\nContent ID: {content_id}\nCategory: gp\nVersion: 01.02",
+        }
+        for name in examples:
+            path = folder / name
+            path.write_bytes(b"\x7fCNT test fixture")
+            os.utime(path, (time.time() - 15,) * 2)
+        self.client.post("/api/roots", json={"path": str(folder)})
+
+        def invoke(_exe, arguments, **_):
+            command, path = arguments
+            self.assertEqual(command, "ps4-info")
+            return 0, examples[path.name]
+
+        with patch.object(scanner, "cli_path", return_value=self.root / "fpkg-cli"), patch.object(
+            scanner, "invoke", side_effect=invoke
+        ) as cli, patch.object(scanner, "enrich_import"):
+            def scan():
+                return self.wait_job(self.client.post("/api/scan", json={}))["report"]
+
+            self.assertEqual(scan()["added"], 0)
+            self.assertEqual(len(self.client.get("/api/games").json()), 1)
+            base = folder / "99 original.pkg"
+            examples[base.name] = f"Title: Example\nTitle ID: CUSA12345\nContent ID: {content_id}\nCategory: gd\nVersion: 01.00"
+            base.write_bytes(b"\x7fCNT base fixture")
+            os.utime(base, (time.time() - 15,) * 2)
+            self.assertEqual(scan()["added"], 1)
+            game = next(game for game in self.client.get("/api/games").json() if game["title_id"] == "CUSA12345")
+            url = f"/api/games/{game['id']}"
+            self.assertEqual((game["version"], game["collection_version"]), ("01.00", "01.10"))
+            self.assertEqual(game["size_bytes"], base.stat().st_size)
+            self.assertEqual([(item["kind"], item["relpath"], item["file_state"]) for item in game["local_packages"]],
+                             [("dlc", "02 dlc.pkg", "online"), ("patch", "01 patch.pkg", "online"),
+                              ("patch", "05 old update.pkg", "online")])
+            self.assertEqual(cli.call_count, 7)
+            self.assertEqual(scan()["skipped"], 6)
+            self.assertEqual(cli.call_count, 8)
+            with sqlite3.connect(self.data / "library.db") as db:
+                stamp = "2026-11-25T12:00:00+00:00"
+                db.execute("INSERT INTO checks VALUES (?,'ok','Test',?,?,NULL,'01.10')", (game["id"], stamp, stamp))
+                db.execute("INSERT INTO patch_history VALUES (?,'01.10',NULL,'Test',?,NULL)", (game["id"], stamp))
+            self.assertEqual(self.client.get(url).json()["patch"]["state"], "current")
+            (folder / "01 patch.pkg").unlink()
+            scan()
+            offline = self.client.get(url).json()
+            self.assertEqual(offline["collection_version"], "01.02")
+            self.assertEqual(offline["patch"]["state"], "available")
+            self.assertEqual(offline["local_packages"][1]["file_state"], "offline")
+            name = self.client.post("/api/backups").json()["name"]
+            self.assertEqual(self.client.post("/api/backups/restore", json={"name": name}).status_code, 200)
+            self.assertEqual(self.client.get(url).json()["local_packages"], offline["local_packages"])
 
     def test_patch_versions_and_network_errors(self):
         game = self.initial()
