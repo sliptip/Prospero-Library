@@ -28,6 +28,7 @@ EXTRA_CONTENT = re.compile(
 BASE_GAME = re.compile(r"\b(?:app|application|base|game|gd|gda|ps[45]gd)\b", re.I)
 PS4_PATCH = re.compile(r"\b(?:gp|gdp|ps4(?:dp|patch)|patch|update)\b", re.I)
 PS4_DLC = re.compile(r"\b(?:ac|al|ps4ac|ps4al|dlc|add[- ]?on|additional content|addcont)\b", re.I)
+PS4_INFO_ROW = re.compile(r"^\s*(Title ID|Content ID|Title|Category|VERSION)[ \t]{2,}(\S.*)$", re.I)
 WORK_DIRECTORY = "_workhard"
 APP_DIRECTORY = Path(sys.executable).parent if getattr(sys, "frozen", False) else BASE
 LOCAL_CLI_DIRECTORY = APP_DIRECTORY / "tools" / "fpkg-cli"
@@ -151,7 +152,8 @@ def decode_bcd(value):
 def metadata_fields(raw):
     values = {}
     for line in re.sub(r"\x1b\[[0-9;]*m", "", raw).splitlines():
-        label = re.match(r'^\s*["“]?([\w .()/-]+?)["”]?\s*[:=]\s*(\S.*?)\s*,?\s*$', line)
+        # ps4-info pads labels to a fixed column width instead of writing a separator.
+        label = PS4_INFO_ROW.match(line) or re.match(r'^\s*["“]?([\w .()/-]+?)["”]?\s*[:=]\s*(\S.*?)\s*,?\s*$', line)
         if label:
             key = re.sub(r"[^a-z0-9]", "", label[1].lower())
             values[key] = label[2].strip().strip('"')

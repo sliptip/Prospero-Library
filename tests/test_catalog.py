@@ -679,12 +679,19 @@ class LocalCatalogTest(unittest.TestCase):
         folder = self.root / "PS4"
         folder.mkdir()
         content_id = "EP0101-CUSA12345_00-BASE000000000001"
+
+        def ps4_info(title, title_id, package_id, category, version):
+            fields = {"Title": title, "Title ID": title_id, "Content ID": package_id,
+                      "Category": category, "VERSION": version, "VERSION (master)": "01.00",
+                      "Size": "128 bytes", "Passcode matches": "Yes", "FPKG key recoverable": "Yes"}
+            return "\n".join(f"  {label:26} {value}" for label, value in fields.items())
+
         examples = {
-            "01 patch.pkg": f"Title: Example\nTitle ID: CUSA12345\nContent ID: {content_id}\nCategory: gp\nVersion: 01.10",
-            "02 dlc.pkg": "Title: Bonus level\nContent ID: EP0101-CUSA12345_00-EXPANSION0000001\nCategory: ac\nVersion: 01.00",
-            "03 language.pkg": "Title: French Language Pack\nContent ID: EP0101-CUSA12345_00-LANGUAGE00000001\nCategory: ac",
-            "04 orphan.pkg": "Title ID: CUSA12346\nCategory: gp\nVersion: 02.00",
-            "05 old update.pkg": f"Title ID: CUSA12345\nContent ID: {content_id}\nCategory: gp\nVersion: 01.02",
+            "01 patch.pkg": ps4_info("Example: Edition", "CUSA12345", content_id, "gp", "01.10"),
+            "02 dlc.pkg": ps4_info("Bonus: Level", "", "EP0101-CUSA12345_00-EXPANSION0000001", "ac", "01.00"),
+            "03 language.pkg": ps4_info("French Language Pack", "", "EP0101-CUSA12345_00-LANGUAGE00000001", "ac", ""),
+            "04 orphan.pkg": ps4_info("", "CUSA12346", "", "gp", "02.00"),
+            "05 old update.pkg": ps4_info("", "CUSA12345", content_id, "gp", "01.02"),
         }
         for name in examples:
             path = folder / name
@@ -706,17 +713,19 @@ class LocalCatalogTest(unittest.TestCase):
             self.assertEqual(scan()["added"], 0)
             self.assertEqual(len(self.client.get("/api/games").json()), 1)
             base = folder / "99 original.pkg"
-            examples[base.name] = f"Title: Example\nTitle ID: CUSA12345\nContent ID: {content_id}\nCategory: gd\nVersion: 01.00"
+            examples[base.name] = ps4_info("Example: Edition", "CUSA12345", content_id, "gd", "01.00")
             base.write_bytes(b"\x7fCNT base fixture")
             os.utime(base, (time.time() - 15,) * 2)
             self.assertEqual(scan()["added"], 1)
             game = next(game for game in self.client.get("/api/games").json() if game["title_id"] == "CUSA12345")
             url = f"/api/games/{game['id']}"
+            self.assertEqual(game["title"], "Example: Edition")
             self.assertEqual((game["version"], game["collection_version"]), ("01.00", "01.10"))
             self.assertEqual(game["size_bytes"], base.stat().st_size)
             self.assertEqual([(item["kind"], item["relpath"], item["file_state"]) for item in game["local_packages"]],
                              [("dlc", "02 dlc.pkg", "online"), ("patch", "01 patch.pkg", "online"),
                               ("patch", "05 old update.pkg", "online")])
+            self.assertEqual(game["local_packages"][0]["title"], "Bonus: Level")
             self.assertEqual(cli.call_count, 7)
             self.assertEqual(scan()["skipped"], 6)
             self.assertEqual(cli.call_count, 8)
