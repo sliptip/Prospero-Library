@@ -59,6 +59,21 @@ export const patchLabel = { unknown: 'Нет данных', available: 'Есть
 export const dlcLabel = { configured: 'В конфигурации', verified: 'Проверено', unknown: 'Неизвестно', absent: 'Не входит' }
 export const fileLabel = { online: 'Файл доступен', offline: 'Файл недоступен', unlinked: 'Файл не привязан' }
 
+export function availableDlcCount(game: Game) {
+  const known = new Set<string>()
+  let unnamed = 0
+  for (const item of game.dlc) {
+    if (item.status !== 'configured' && item.status !== 'verified') continue
+    if (item.content_id) known.add('id:' + item.content_id)
+    else unnamed += 1
+  }
+  for (const file of game.local_packages) {
+    if (file.kind !== 'dlc' || file.file_state !== 'online') continue
+    known.add(file.content_id ? 'id:' + file.content_id : 'path:' + file.relpath)
+  }
+  return known.size + unnamed
+}
+
 export function patchFirmwareText(firmware?: string | null) {
   return firmware?.split('.', 2).join('.') || unknown
 }

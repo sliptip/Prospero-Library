@@ -428,8 +428,14 @@ def enrich_import(database, game_id, build_id, executable, path, metadata, art, 
                     if kind in missing and kind not in candidates:
                         try:
                             candidates[kind] = (bounded_get(client, asset["url"], MAX_IMAGE), PS_STORE_SOURCE)
+                        except httpx.HTTPStatusError as error:
+                            logger.info("Изображение PlayStation Store недоступно: %s, %s (HTTP %s)",
+                                        content_id, asset["id"], error.response.status_code)
                         except (httpx.HTTPError, ValueError):
                             logger.info("Изображение PlayStation Store недоступно: %s, %s", content_id, asset["id"])
+        except httpx.HTTPStatusError as error:
+            logger.info("Оформление PlayStation Store недоступно: %s, HTTP %s (%s)",
+                        content_id, error.response.status_code, error.request.url.path)
         except (httpx.HTTPError, KeyError, TypeError, ValueError, AttributeError) as error:
             logger.info("Оформление PlayStation Store недоступно: %s, %s", content_id, type(error).__name__)
 

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { ArrowDownUp, ArrowRight, ChevronDown, Gamepad2, Grid2X2, GripVertical, LibraryBig, List, Plus, SlidersHorizontal, X } from 'lucide-react'
-import { Game, gameCount, russianSupport, sizeText, stored } from './model'
+import { Game, availableDlcCount, gameCount, russianSupport, sizeText, stored } from './model'
 
 type Props = { games: Game[]; hideRecent: boolean; query: string; open: (game: Game) => void; add: () => void; swap: (source: number, target: number) => Promise<void> }
 type Sort = 'added_at' | 'title' | 'release_date' | 'size_bytes' | 'update' | 'manual'
@@ -67,8 +67,7 @@ export function Library({ games, hideRecent, query, open, add, swap }: Props) {
   const filtered = games.filter(game => (
     (!search || matchText(game.title + ' ' + game.title_id).includes(search)) &&
     (platform === 'all' || game.platform === platform) &&
-    (!filters.dlc || game.dlc.some(item => item.status === 'verified' || item.status === 'configured') ||
-      game.local_packages.some(item => item.kind === 'dlc' && item.file_state === 'online')) &&
+    (!filters.dlc || availableDlcCount(game) > 0) &&
     matchesLanguages(game) &&
     (!filters.update || game.patch.state === 'available')
   )).sort((a, b) => {
@@ -151,7 +150,9 @@ export function Library({ games, hideRecent, query, open, add, swap }: Props) {
         <p>{games.length ? 'Измените поиск или фильтры.' : 'Добавьте игру вручную или укажите папку коллекции в настройках.'}</p>
         {!games.length && <button className="button primary" onClick={add}><Plus size={17} /> Добавить игру</button>}
       </div> : <div className={mode === 'grid' ? 'shelf' : 'game-list'}>
-        {filtered.map(game => <div key={game.id} className={'game-item' + (manual ? ' reorderable' : '') +
+        {filtered.map(game => {
+          const dlcCount = mode === 'grid' ? availableDlcCount(game) : 0
+          return <div key={game.id} className={'game-item' + (manual ? ' reorderable' : '') +
           (dropTarget === game.id || selectedGame?.id === game.id ? ' reorder-target' : '') +
           (dragging === game.id ? ' reordering' : '')}
           onDragOver={event => {
@@ -180,7 +181,7 @@ export function Library({ games, hideRecent, query, open, add, swap }: Props) {
             <div className="tile-text">
               <strong>{game.title}</strong>
               {mode === 'list' ? <span>{game.edition || game.title_id}</span> : <span className="tile-meta"><span>{game.collection_version || '—'}</span>
-                {game.dlc.some(dlc => dlc.status === 'configured' || dlc.status === 'verified') && <span>{game.dlc.filter(dlc => dlc.status === 'configured' || dlc.status === 'verified').length} DLC</span>}</span>}
+                {dlcCount > 0 && <span>{dlcCount} DLC</span>}</span>}
             </div>
             {mode === 'list' && <><span className="platform">{game.platform}</span><span className="mono row-version">{game.collection_version || '—'}</span>
               <span className="row-size">{sizeText(game.size_bytes)}</span><ArrowRight size={17} className="row-arrow" /></>}
@@ -195,7 +196,8 @@ export function Library({ games, hideRecent, query, open, add, swap }: Props) {
               setDragging(game.id)
             }}
             onDragEnd={() => { setDragging(null); setDropTarget(null) }}><GripVertical size={17} /></button>}
-        </div>)}
+        </div>
+        })}
         {mode === 'grid' && !search && platform === 'all' && !activeFilters && <button className="add-tile" onClick={add}><Plus size={22} />Добавить игру</button>}
       </div>}
     </section>

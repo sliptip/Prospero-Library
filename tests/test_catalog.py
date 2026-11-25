@@ -217,7 +217,7 @@ class LocalCatalogTest(unittest.TestCase):
 
         def store(request):
             requests.append(request.url.path)
-            if request.url.path.startswith("/ru-ua/"):
+            if not request.url.path.startswith("/en-us/"):
                 return httpx.Response(404)
             return httpx.Response(200, content=f'<script id="__NEXT_DATA__">{payload}</script>'.encode())
 
@@ -228,7 +228,8 @@ class LocalCatalogTest(unittest.TestCase):
         self.assertEqual(result.json()["language"], "en")
         self.assertEqual(result.json()["description"], "Official English description")
         self.assertEqual(result.json()["localization"], {"screen": None, "audio": None})
-        self.assertEqual(requests, [f"/ru-ua/product/{content_id}", f"/en-us/product/{content_id}"])
+        self.assertEqual(requests, [f"/ru-ua/product/{content_id}", f"/ja-jp/product/{content_id}",
+                                    f"/en-us/product/{content_id}"])
 
     def test_game_about_finds_a_russian_edition_of_the_same_concept(self):
         content_id = self.initial()["content_id"]
@@ -252,7 +253,7 @@ class LocalCatalogTest(unittest.TestCase):
 
         def store(request):
             requests.append(request.url.path)
-            if request.url.path == f"/ru-ua/product/{content_id}":
+            if request.url.path in {f"/ru-ua/product/{content_id}", f"/ja-jp/product/{content_id}"}:
                 return httpx.Response(404)
             if request.url.path == f"/en-us/product/{content_id}":
                 return httpx.Response(200, content=page({"productId": content_id, "locale": "en-us",
@@ -268,7 +269,8 @@ class LocalCatalogTest(unittest.TestCase):
         self.assertEqual(response.json()["language"], "ru")
         self.assertEqual(response.json()["release_date"], "2026-10-15")
         self.assertEqual(response.json()["localization"], {"screen": None, "audio": ["en"]})
-        self.assertEqual(requests, [f"/ru-ua/product/{content_id}", f"/en-us/product/{content_id}", "/ru-ua/concept/227770"])
+        self.assertEqual(requests, [f"/ru-ua/product/{content_id}", f"/ja-jp/product/{content_id}",
+                                    f"/en-us/product/{content_id}", "/ru-ua/concept/227770"])
 
     def test_legacy_store_cache_survives_offline_and_picks_up_languages(self):
         content_id = self.initial()["content_id"]
@@ -421,9 +423,9 @@ class LocalCatalogTest(unittest.TestCase):
         props = {"productId": content_id, "batarangs": {"media-carousel": {"text": fragment}}}
         payload = json.dumps({"props": {"pageProps": props}}).replace("<", r"\u003c")
         page = f'<script id="__NEXT_DATA__">{payload}</script>'.encode()
-        candidates = artwork.playstation_media(page, content_id, "Castlevania")
+        candidates = artwork.playstation_media(artwork.playstation_props(page, content_id), content_id, "Castlevania")
         self.assertEqual([item["url"] for item in candidates], [image])
-        self.assertEqual(artwork.playstation_media(page, "UP0000-PPSA99999_00-FAKEPRODUCT00000", "Чужая игра"), [])
+        self.assertEqual(artwork.playstation_props(page, "UP0000-PPSA99999_00-FAKEPRODUCT00000"), {})
         original = io.BytesIO()
         Image.new("RGB", (150, 150), "orange").save(original, "JPEG")
         content = original.getvalue()
@@ -439,6 +441,27 @@ class LocalCatalogTest(unittest.TestCase):
         backup = self.client.post("/api/backups").json()["name"]
         self.assertEqual(self.client.post("/api/backups/restore", json={"name": backup}).status_code, 200)
         self.assertEqual(self.client.get(self.initial()["cover"]).content, content)
+
+    def test_store_art_uses_regional_page_for_the_same_product(self):
+        content_id = "EP9000-CUSA03173_00-BLOODBORNE0000EU"
+        url = "https://image.api.playstation.com/vulcan/bloodborne.jpg"
+        media = [{"role": "PORTRAIT_BANNER", "type": "IMAGE", "url": url}]
+        requests = []
+
+        def store(request):
+            requests.append(request.url.path)
+            if request.url.path.startswith("/ru-ua/"):
+                return httpx.Response(302, headers={"Location": "/ru-ua/pages/latest"})
+            product = {"id": content_id, "media": media}
+            cache = json.dumps({"cache": {f"Product:{content_id}": product}})
+            props = {"productId": content_id, "batarangs": {"media-carousel": {"text": f"<script>{cache}</script>"}}}
+            payload = json.dumps({"props": {"pageProps": props}}).replace("<", r"\u003c")
+            return httpx.Response(200, text=f'<script id="__NEXT_DATA__">{payload}</script>')
+
+        with httpx.Client(transport=httpx.MockTransport(store)) as client:
+            candidates = artwork.Artwork().playstation(client, "Bloodborne", content_id)
+        self.assertEqual([item["url"] for item in candidates], [url])
+        self.assertEqual(requests, [f"/ru-ua/product/{content_id}", f"/en-gb/product/{content_id}"])
 
     def test_fih_game_type_and_package_exclusions(self):
         metadata = scanner.parse_metadata(CASTLEVANIA_INFO, Path("Castlevania.pkg"))

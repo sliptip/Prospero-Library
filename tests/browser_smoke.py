@@ -336,6 +336,22 @@ def run(screenshots, browser_executable):
             expect(page.get_by_text("Библиотека восстановлена")).to_be_visible()
             page.get_by_role("link", name="Библиотека").click()
             expect(page.locator(".game-tile")).to_have_count(1)
+            with sqlite3.connect(directory / "data" / "library.db") as db:
+                db.execute("INSERT INTO games (platform,title_id,title,added_at) VALUES ('PS4','CUSA20469','Cuphead','2026-11-25')")
+                game_id = db.execute("SELECT id FROM games WHERE title_id='CUSA20469'").fetchone()[0]
+                root_id = db.execute("INSERT INTO roots (path,state) VALUES ('PS4 fixtures','online')").lastrowid
+                package_id = "EP8254-CUSA20469_00-CUPHEADDLC000000"
+                db.execute("INSERT INTO dlc (game_id,name,status,content_id) VALUES (?,'Delicious Last Course','configured',?)",
+                           (game_id, package_id))
+                db.executemany(
+                    """INSERT INTO ps4_extras (root_id,relpath,size_bytes,mtime,title_id,kind,title,content_id,available)
+                       VALUES (?, ?, 100, 0, 'CUSA20469', 'dlc', 'Extra', ?, ?)""",
+                    [(root_id, "delicious.pkg", package_id, 1), (root_id, "bonus.pkg", None, 1),
+                     (root_id, "removed.pkg", None, 0)],
+                )
+            page.reload(wait_until="networkidle")
+            cuphead = page.locator(".game-tile").filter(has_text="Cuphead")
+            expect(cuphead.get_by_text("2 DLC", exact=True)).to_be_visible()
             assert not errors, errors
     print("Browser smoke passed: desktop/tablet/phone, journal, edit, artwork, manual order, restart, backup and restore.")
 

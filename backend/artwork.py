@@ -106,6 +106,11 @@ def playstation_url(content_id, locale="en-us"):
     return None
 
 
+def playstation_locales(content_id):
+    preferred = {"EP": "en-gb", "JP": "ja-jp", "HP": "en-hk"}.get(content_id[:2], "en-us")
+    return tuple(dict.fromkeys(("ru-ua", preferred, "en-us")))
+
+
 def playstation_props(page, content_id=None):
     script = re.search(rb'<script\b[^>]*\bid="__NEXT_DATA__"[^>]*>(.*?)</script>', page, re.S)
     if not script:
@@ -127,8 +132,7 @@ def playstation_slot(props, slot, content_id):
     return product if product.get("id") == content_id else {}
 
 
-def playstation_media(page, content_id, title):
-    props = playstation_props(page, content_id)
+def playstation_media(props, content_id, title):
     for slot in ("media-carousel", "background-image"):
         product = playstation_slot(props, slot, content_id)
         media = product.get("media", [])
@@ -316,10 +320,9 @@ def playstation_dlc_candidates(props, content_id):
 
 
 def playstation_dlc(client, content_id):
-    preferred = {"EP": "en-gb", "JP": "ja-jp", "HP": "en-hk"}.get(content_id[:2], "en-us")
     failure = None
     found = False
-    for locale in dict.fromkeys(("ru-ua", preferred, "en-us")):
+    for locale in playstation_locales(content_id):
         url = playstation_url(content_id, locale)
         try:
             props = playstation_props(bounded_get(client, url, 3_000_000), content_id)
@@ -364,7 +367,7 @@ def russian_concept(client, product_props, content_id):
 
 def playstation_about(client, content_id):
     metadata, failure = None, None
-    for locale in ("ru-ua", "en-us"):
+    for locale in playstation_locales(content_id):
         url = playstation_url(content_id, locale)
         try:
             props = playstation_props(bounded_get(client, url, 3_000_000), content_id)
@@ -381,7 +384,7 @@ def playstation_about(client, content_id):
         if locale == "ru-ua" and about["language"] != "ru":
             metadata = about
             continue
-        if locale == "en-us":
+        if locale != "ru-ua":
             try:
                 localized = russian_concept(client, props, content_id)
             except (httpx.HTTPError, KeyError, TypeError, ValueError, AttributeError):
@@ -473,10 +476,26 @@ class Artwork:
         return result
 
     def playstation(self, client, title, content_id):
-        if not (url := playstation_url(content_id)):
+        if not playstation_url(content_id):
             return []
-        page = bounded_get(client, url, 3_000_000)
-        return playstation_media(page, content_id, title)
+        failure = None
+        found = False
+        for locale in playstation_locales(content_id):
+            url = playstation_url(content_id, locale)
+            try:
+                page = bounded_get(client, url, 3_000_000)
+            except httpx.HTTPStatusError as error:
+                if not (error.response.is_redirect or error.response.status_code in (404, 410)):
+                    raise
+                failure = error
+                continue
+            if props := playstation_props(page, content_id):
+                found = True
+                if candidates := playstation_media(props, content_id, title):
+                    return candidates
+        if not found and failure:
+            raise failure
+        return []
 
     def search(self, title, platform, content_id=None):
         available = providers()
