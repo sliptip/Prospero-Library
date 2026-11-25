@@ -380,7 +380,7 @@ export function GamePage({ game, back, edit, art, updates, updating, removed, on
         <h2>Игра в коллекции</h2>
         <dl className="meta-grid">
           <Meta name={localPatches.length ? 'Версия основной игры' : 'Версия'} className="mono">{game.version}</Meta>
-          {localPatches.some(item => item.file_state === 'online' && item.version === game.collection_version) &&
+          {game.collection_version && game.collection_version !== game.version &&
             <Meta name="Версия с патчем в коллекции" className="mono">{game.collection_version}</Meta>}
           <Meta name="Требуемая прошивка" className="mono">{game.firmware}</Meta>
           <Meta name="Размер">{game.size_bytes != null ? sizeText(game.size_bytes) : unknown}</Meta>

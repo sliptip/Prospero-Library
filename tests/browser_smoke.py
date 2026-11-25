@@ -408,9 +408,17 @@ def run(screenshots, browser_executable):
             with sqlite3.connect(directory / "data" / "library.db") as db:
                 db.execute("UPDATE roots SET state='offline' WHERE id=?", (root_id,))
             page.goto(restarted, wait_until="networkidle")
-            expect(cuphead.locator(".collection-patch-status")).to_have_count(0)
+            expect(cuphead.get_by_role("img", name="Актуальная версия")).to_be_visible()
+            expect(cuphead.get_by_text("01.05", exact=True)).to_be_visible()
             expect(page.locator(".game-tile").filter(has_text="Castlevania")
                    .get_by_role("img", name="Есть обновление")).to_be_visible()
+            page.get_by_role("button", name="Список", exact=True).click()
+            cuphead_row = page.locator(".game-row").filter(has_text="Cuphead")
+            expect(cuphead_row.get_by_role("img", name="Актуальная версия")).to_be_visible()
+            cuphead_row.click()
+            collection_version = page.get_by_text("Версия с патчем в коллекции", exact=True).locator("..")
+            expect(collection_version.get_by_text("01.05", exact=True)).to_be_visible()
+            expect(page.get_by_text("На диске", exact=True).locator("..")).to_contain_text("Файл недоступен")
             assert not errors, errors
     print("Browser smoke passed: desktop/tablet/phone, journal, edit, artwork, manual order, restart, backup and restore.")
 
