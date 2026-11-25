@@ -254,7 +254,10 @@ export function CompatiblePatch({ patch }: { patch: PatchInfo }) {
 }
 
 function PackageFile({ item }: { item: LocalPackage }) {
-  return <p title={item.relpath}>{item.relpath.split('/').at(-1)} · {sizeText(item.size_bytes)} · {fileLabel[item.file_state]}</p>
+  return <p className="package-file" title={item.relpath}>
+    <span>{item.relpath.split('/').at(-1)}</span>
+    <span>{sizeText(item.size_bytes)} · {fileLabel[item.file_state]}</span>
+  </p>
 }
 
 type AboutState = { status: 'loading' } | { status: 'ready'; game: GameAbout | null } | { status: 'error'; message: string }
@@ -489,7 +492,7 @@ export function ArtworkDialog({ game, close, save }: { game: Game; close: () => 
           '/games/' + game.id + '/artwork/search', { method: 'POST' })
         setResults(response.items)
         setInfo(response.issues.join('. ') || (response.items.length ? '' :
-          Object.values(response.sources).some(Boolean) ? 'Варианты не найдены.' : 'IGDB и SteamGridDB можно подключить через .env.'))
+          Object.values(response.sources).some(Boolean) ? 'Варианты не найдены.' : 'IGDB и SteamGridDB можно подключить в настройках.'))
       })}><Download size={16} /> {busy ? 'Подождите…' : 'Найти варианты онлайн'}</button>
       {info && <p className="muted note" role="status">{info}</p>}
       {error && <p className="error" role="alert">{error}</p>}

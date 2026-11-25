@@ -1,4 +1,4 @@
-"""Retrieve patch metadata over HTTPS from Sony and ProsperoPatches."""
+"""Retrieve patch metadata over HTTPS from Sony and the PlayStation patch archives."""
 import json
 import logging
 import os
@@ -24,7 +24,10 @@ logger = logging.getLogger(__name__)
 SOURCE = "Sony CDN"
 PATCH_SITE = "ProsperoPatches"
 PATCH_SITE_HOST = "prosperopatches.com"
-PATCH_SITE_URL = f"https://{PATCH_SITE_HOST}"
+ORBIS_PATCH_SITE = "OrbisPatches"
+ORBIS_PATCH_HOST = "orbispatches.com"
+PATCH_ARCHIVES = {"PPSA": (PATCH_SITE, PATCH_SITE_HOST), "CUSA": (ORBIS_PATCH_SITE, ORBIS_PATCH_HOST)}
+PATCH_HOST_NAMES = {host: name for name, host in PATCH_ARCHIVES.values()}
 PS5_HOST = "sgst.prod.dl.playstation.net"
 PS4_HOST = "gs-sec.ww.np.dl.playstation.net"
 MAX_MANIFEST = 1_500_000
@@ -61,7 +64,7 @@ def transport_details(error):
 
 
 def log_response(response):
-    source = PATCH_SITE if response.url.host == PATCH_SITE_HOST else SOURCE
+    source = PATCH_HOST_NAMES.get(response.url.host, SOURCE)
     logger.info("%s: HTTP %s, Content-Type %r", source, response.status_code,
                 response.headers.get("content-type", "")[:120])
 
@@ -234,25 +237,36 @@ class PatchPage(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         fields = dict(attrs)
-        if tag == "div" and fields.get("id") == "dynpatch" and fields.get("data-titleid") == self.title:
-            key = fields.get("data-key") or ""
-            if re.fullmatch(r"[0-9a-f]{64}", key):
-                self.key = key
+        if tag != "div" or fields.get("id") != "dynpatch":
+            return
+        title, key = fields.get("data-titleid"), fields.get("data-key")
+        if params := fields.get("data-loadparams"):
+            try:
+                values = json.loads(params.replace("'", '"'))
+            except ValueError:
+                return
+            if isinstance(values, dict):
+                title, key = values.get("titleid"), values.get("key")
+        if title == self.title and isinstance(key, str) and re.fullmatch(r"[0-9a-f]{64}", key):
+            self.key = key
 
 
 def retrieve_patch_site(client, title):
-    if not re.fullmatch(r"PPSA[0-9]{5}", title):
+    archive = PATCH_ARCHIVES.get(title[:4])
+    if not archive or not re.fullmatch(r"(?:CUSA|PPSA)[0-9]{5}", title):
         return []
-    url = f"{PATCH_SITE_URL}/{title}"
+    source, host = archive
+    site_url = f"https://{host}"
+    url = f"{site_url}/{title}"
     page = PatchPage(title)
-    page.feed(fetch_manifest(client, url, "страница Title ID", source=PATCH_SITE).decode("utf-8"))
+    page.feed(fetch_manifest(client, url, "страница Title ID", source=source).decode("utf-8"))
     if not page.key:
         raise ValueError("Страница не содержит публичного списка патчей для этого Title ID")
     # This is the public version list requested when the title page opens.
-    data = fetch_manifest(client, f"{PATCH_SITE_URL}/api/internal/loadpatches", "список патчей",
-                          source=PATCH_SITE, method="POST", content=json.dumps({"titleid": title, "key": page.key}),
+    data = fetch_manifest(client, f"{site_url}/api/internal/loadpatches", "список патчей",
+                          source=source, method="POST", content=json.dumps({"titleid": title, "key": page.key}),
                           headers={"Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-                                   "Accept": "application/json", "Origin": PATCH_SITE_URL, "Referer": url})
+                                   "Accept": "application/json", "Origin": site_url, "Referer": url})
     result = json.loads(data)
     if (not isinstance(result, dict) or result.get("success") is not True or result.get("titleid") != title or
             not isinstance(result.get("patches"), list)):
@@ -343,8 +357,9 @@ def check_one(database, client, game, stop):
     title = (game.get("package_identity") or game)["title_id"]
     source = SOURCE
     rows, state, message = check_sony(client, game["version_uri"], title)
-    if not rows and title.startswith("PPSA") and not stop.is_set():
-        source = PATCH_SITE
+    archive = PATCH_ARCHIVES.get(title[:4])
+    if not rows and archive and not stop.is_set():
+        source = archive[0]
         logger.info("%s: %s. Проверяем %s", title, message, source)
         try:
             rows = retrieve_patch_site(client, title)

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import httpx
 
-from .artwork import LANGUAGE_PACK, MAX_IMAGE, PS_STORE_PRODUCT, PS_STORE_SOURCE, Artwork, bounded_get, providers, store_image
+from .artwork import LANGUAGE_PACK, MAX_IMAGE, PS_STORE_PRODUCT, PS_STORE_SOURCE, Artwork, bounded_get, store_image
 from .catalog import version_key
 from .database import APP_DIRECTORY, now
 from .seed import PUBLISHER_METADATA
@@ -298,7 +298,7 @@ def scan(database, state, stop, publish, *, force=False):
     if executable is None:
         raise MetadataError("Укажите путь к fpkg-cli в настройках")
 
-    art = Artwork()
+    art = Artwork(database.directory)
     for root in roots:
         if stop.is_set():
             return
@@ -448,7 +448,7 @@ def enrich_import(database, game_id, build_id, executable, path, metadata, art, 
         if paths:
             candidates.update(ps5_assets(database, build_id, executable, path, paths, stop))
 
-    if ("cover" in missing and "cover" not in candidates and providers()["IGDB"]
+    if ("cover" in missing and "cover" not in candidates and art.providers()["IGDB"]
             and game["title"] != metadata["title_id"] and not stop.is_set()):
         try:
             with httpx.Client(timeout=6, follow_redirects=False) as client:

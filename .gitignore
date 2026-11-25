@@ -3,6 +3,7 @@ __pycache__/
 node_modules/
 dist/
 data/
+artwork-keys.json
 tools/fpkg-cli/
 .env
 .env.*

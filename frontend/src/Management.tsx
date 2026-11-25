@@ -129,6 +129,22 @@ export function SettingsPage({ refresh, setHideRecent, scan, running, openJourna
       setNotice('Настройки сохранены')
     })
   }
+  function saveArtworkKeys(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const form = event.currentTarget
+    const keys = Object.fromEntries([...new FormData(form).entries()].map(([key, value]) => [key, String(value).trim()])
+      .filter(([, value]) => value))
+    void action(async () => {
+      if (!Object.keys(keys).length) {
+        setNotice('Введи хотя бы один ключ')
+        return
+      }
+      const { providers } = await api<Pick<Settings, 'providers'>>('/settings/artwork', json('PATCH', keys))
+      setSettings(current => current && { ...current, providers })
+      form.reset()
+      setNotice('Ключи сохранены')
+    })
+  }
   return <>
     <div className="page-intro"><h1>Настройки</h1><p>Папки коллекции, прошивки и резервные копии</p></div>
     {error && <p className="banner error" role="alert">{error}</p>}
@@ -201,6 +217,14 @@ export function SettingsPage({ refresh, setHideRecent, scan, running, openJourna
         <ul className="provider-list">{Object.entries(settings.providers).map(([name, available]) => <li key={name}>
           <span>{name}</span><small className={available ? 'positive' : 'muted'}>{available ? 'Настроен' : 'Ключ не задан'}</small>
         </li>)}</ul>
+        <p className="muted note">Для IGDB укажи Client ID и один из двух реквизитов — Client Secret или Access Token. Пустые поля сохраняют прежние значения.</p>
+        <form className="form-grid" onSubmit={saveArtworkKeys} autoComplete="off">
+          <label className="field">IGDB Client ID<input type="text" name="IGDB_CLIENT_ID" maxLength={2048} /></label>
+          <label className="field">IGDB Client Secret<input type="password" name="IGDB_CLIENT_SECRET" autoComplete="new-password" maxLength={2048} /></label>
+          <label className="field">IGDB Access Token<input type="password" name="IGDB_ACCESS_TOKEN" autoComplete="new-password" maxLength={2048} /></label>
+          <label className="field">Ключ SteamGridDB<input type="password" name="STEAMGRIDDB_API_KEY" autoComplete="new-password" maxLength={2048} /></label>
+          <div className="button-row journal-actions span-two"><button className="button primary" disabled={busy}>Сохранить ключи</button></div>
+        </form>
       </section>
       <section className="panel">
         <div className="section-heading"><h2>Резервные копии</h2>

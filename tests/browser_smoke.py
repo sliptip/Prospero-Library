@@ -66,10 +66,17 @@ def run(screenshots, browser_executable):
         with server(directory / "data") as base:
             page.goto(base, wait_until="networkidle")
             expect(page.get_by_role("heading", name="Моя библиотека")).to_be_visible()
+            expect(page.locator(".sidebar-version")).to_have_text(re.compile(r"^v\d+\.\d+\.\d+$"))
             expect(page.get_by_role("button", name="Открыть карточку")).to_be_visible()
             capture(page, screenshots, "Prospero-Library.png")
 
             page.get_by_role("link", name="Настройки").click()
+            key = page.get_by_label("Ключ SteamGridDB")
+            key.fill("local-fixture-key")
+            page.get_by_role("button", name="Сохранить ключи").click()
+            expect(page.get_by_text("Ключи сохранены", exact=True)).to_be_visible()
+            expect(key).to_have_value("")
+            expect(page.locator(".provider-list li").filter(has_text="SteamGridDB")).to_contain_text("Настроен")
             hide_recent = page.get_by_label("Скрывать недавно добавленную игру")
             with page.expect_response("**/api/settings/library"):
                 hide_recent.check()
@@ -273,6 +280,7 @@ def run(screenshots, browser_executable):
             expect(page.get_by_text("Текущая обложка · Вручную")).to_be_visible()
             page.get_by_role("button", name="Закрыть", exact=True).click()
             expect(page.locator(".detail-title .cover img")).to_have_attribute("src", re.compile("/media/"))
+            expect(page.locator(".detail-title .cover img")).to_have_css("object-fit", "contain")
 
             page.get_by_role("link", name="Настройки").click()
             page.get_by_role("button", name="Добавить папки").click()
@@ -352,7 +360,8 @@ def run(screenshots, browser_executable):
                 game_id = db.execute("SELECT id FROM games WHERE title_id='CUSA20469'").fetchone()[0]
                 root_id = db.execute("INSERT INTO roots (path,state) VALUES ('PS4 fixtures','online')").lastrowid
                 package_id = "EP8254-CUSA20469_00-CUPHEADDLC000000"
-                db.execute("INSERT INTO dlc (game_id,name,status,content_id) VALUES (?,'Delicious Last Course','configured',?)",
+                db.execute("""INSERT INTO dlc (game_id,name,description,status,content_id)
+                              VALUES (?,'Delicious Last Course','Описание дополнения','configured',?)""",
                            (game_id, package_id))
                 db.executemany(
                     """INSERT INTO ps4_extras (root_id,relpath,size_bytes,mtime,title_id,kind,title,content_id,available)
@@ -363,6 +372,11 @@ def run(screenshots, browser_executable):
             page.reload(wait_until="networkidle")
             cuphead = page.locator(".game-tile").filter(has_text="Cuphead")
             expect(cuphead.get_by_text("2 DLC", exact=True)).to_be_visible()
+            cuphead.click()
+            expansion_row = page.locator(".dlc-row").filter(has_text="Delicious Last Course")
+            filename = expansion_row.locator(".package-file")
+            expect(filename).to_contain_text("delicious.pkg")
+            expect(filename).to_have_css("border-top-width", "1px")
             assert not errors, errors
     print("Browser smoke passed: desktop/tablet/phone, journal, edit, artwork, manual order, restart, backup and restore.")
 

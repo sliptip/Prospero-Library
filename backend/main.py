@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import secrets
 import sqlite3
 import time
@@ -19,8 +20,8 @@ from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import __version__, catalog, patches, scanner
-from .artwork import (ART_NAME, MAX_IMAGE, PS_STORE_HOST, PS_STORE_SOURCE, Artwork, bounded_get, playstation_about,
-                      playstation_description, playstation_dlc, playstation_url, providers, store_image)
+from .artwork import (ARTWORK_KEYS, ART_NAME, MAX_IMAGE, PS_STORE_HOST, PS_STORE_SOURCE, Artwork, bounded_get,
+                      playstation_about, playstation_description, playstation_dlc, playstation_url, store_image)
 from .backup import BUNDLE_NAME, create_backup, restore_backup
 from .database import APP_DIRECTORY, BASE, Database, app_data_directory
 from .jobs import Jobs
@@ -70,7 +71,7 @@ def create_app(data_directory=None, frontend_directory=None):
     load_dotenv(APP_DIRECTORY / ".env")
     database = Database(data_directory if data_directory is not None else app_data_directory())
     jobs = Jobs(database)
-    artwork = Artwork()
+    artwork = Artwork(database.directory)
     candidates = {}
     log_path = database.directory / "logs" / "prospero.log"
     front = Path(frontend_directory or os.getenv("PROSPERO_FRONTEND") or BASE / "frontend" / "dist")
@@ -328,7 +329,7 @@ def create_app(data_directory=None, frontend_directory=None):
                 token = secrets.token_urlsafe(20)
                 candidates[token] = (game_id, stamp + 900, dict(display))
                 display["token"] = token
-        return {"items": found, "issues": issues, "sources": providers()}
+        return {"items": found, "issues": issues, "sources": artwork.providers()}
 
     @app.post("/api/games/{game_id}/artwork/select")
     def choose_artwork(game_id: int, value: ArtworkInput):
@@ -359,7 +360,31 @@ def create_app(data_directory=None, frontend_directory=None):
             config.pop("card_identities", None)
             roots = [dict(row) for row in db.execute("SELECT * FROM roots ORDER BY id")]
         return {**config, "hide_recent": config.get("hide_recent") == "1",
-                "roots": roots, "providers": providers(), "cli_local": scanner.local_cli() is not None}
+                "roots": roots, "providers": artwork.providers(), "cli_local": scanner.local_cli() is not None}
+
+    @app.patch("/api/settings/artwork")
+    async def save_artwork_settings(request: Request):
+        invalid = HTTPException(422, "Укажите допустимые ключи источников оформления")
+        try:
+            body = await request.json()
+        except ValueError:
+            raise invalid from None
+        if not isinstance(body, dict) or not body or any(key not in ARTWORK_KEYS for key in body):
+            raise invalid
+        changes = {}
+        for key, value in body.items():
+            if value is None:
+                changes[key] = None
+            elif isinstance(value, str) and re.fullmatch(r"[!-~]{1,2048}", value):
+                changes[key] = value
+            else:
+                raise invalid
+        try:
+            with database.lock:
+                artwork.save_keys(changes)
+            return {"providers": artwork.providers()}
+        except (OSError, ValueError) as error:
+            raise HTTPException(500, "Не удалось сохранить ключи источников оформления") from error
 
     @app.patch("/api/settings/library")
     def save_library_settings(item: LibrarySettingsInput):

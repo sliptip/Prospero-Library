@@ -19,6 +19,7 @@ export function App() {
   const [route, setRoute] = useState(window.location.pathname)
   const [games, setGames] = useState<Game[]>([])
   const [ready, setReady] = useState(false)
+  const [version, setVersion] = useState('')
   const [hideRecent, setHideRecent] = useState(false)
   const [query, setQuery] = useState('')
   const [job, setJob] = useState<Job | null>(null)
@@ -62,6 +63,7 @@ export function App() {
     window.addEventListener('popstate', back)
     window.addEventListener('keydown', key)
     void refresh().catch(showError)
+    void api<{ version: string }>('/health').then(result => setVersion(result.version)).catch(() => {})
     void api<Job | null>('/jobs/latest').then(setJob).catch(() => {})
     return () => {
       window.removeEventListener('popstate', back)
@@ -134,6 +136,7 @@ export function App() {
           </a>
         })}
       </nav>
+      {version && <span className="sidebar-version" title={'Версия приложения ' + version}>v{version}</span>}
     </aside>
     <div className="app-main">
       <header className="topbar">

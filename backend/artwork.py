@@ -8,6 +8,7 @@ import time
 import unicodedata
 from datetime import date
 from html.parser import HTMLParser
+from pathlib import Path
 from urllib.parse import quote, urlsplit
 
 import httpx
@@ -24,6 +25,7 @@ LANGUAGE_PACK = re.compile(
     r"sprachpaket|pack de (?:idiomas?|langues?)|pacote de idioma|pacchetto lingu|言語パック|语言包|語言包|언어 팩", re.I,
 )
 IMAGE_HOSTS = {"images.igdb.com", "cdn.steamgriddb.com", PS_STORE_HOST}
+ARTWORK_KEYS = ("IGDB_CLIENT_ID", "IGDB_CLIENT_SECRET", "IGDB_ACCESS_TOKEN", "STEAMGRIDDB_API_KEY")
 
 
 def store_image(database, content, kind, *, original=False):
@@ -41,11 +43,7 @@ def store_image(database, content, kind, *, original=False):
                 data = content
             else:
                 image = ImageOps.exif_transpose(image).convert("RGB")
-                if kind == "cover":
-                    width = min(image.width, 1000, image.height * 2 // 3)
-                    image = ImageOps.fit(image, (width, width * 3 // 2))
-                else:
-                    image.thumbnail((1920, 1200))
+                image.thumbnail((1000, 1500) if kind == "cover" else (1920, 1200))
                 converted = io.BytesIO()
                 image.save(converted, format="WEBP", quality=91)
                 data, suffix = converted.getvalue(), ".webp"
@@ -90,14 +88,6 @@ def comparable(title):
     title = unicodedata.normalize("NFKC", title).casefold()
     title = re.sub(r"[’'™®]", "", title)
     return re.sub(r"[^\w]+", " ", title).strip()
-
-
-def providers():
-    return {
-        PS_STORE_SOURCE: True,
-        "IGDB": bool(os.getenv("IGDB_CLIENT_ID") and (os.getenv("IGDB_ACCESS_TOKEN") or os.getenv("IGDB_CLIENT_SECRET"))),
-        "SteamGridDB": bool(os.getenv("STEAMGRIDDB_API_KEY")),
-    }
 
 
 def playstation_url(content_id, locale="en-us"):
@@ -454,24 +444,69 @@ def playstation_about(client, content_id):
 
 
 class Artwork:
-    def __init__(self):
-        self.token = None
-        self.token_expiry = 0
+    def __init__(self, directory=None):
+        self.keys_file = directory / "artwork-keys.json" if directory is not None else None
+        self.igdb_token = None
+
+    def saved_keys(self):
+        if self.keys_file is None:
+            return {}
+        try:
+            data = json.loads(self.keys_file.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return {}
+        if not isinstance(data, dict):
+            raise ValueError("Некорректный файл ключей оформления")
+        return {key: data[key] for key in ARTWORK_KEYS if isinstance(data.get(key), str)}
+
+    def save_keys(self, changes):
+        data = self.saved_keys()
+        for key, value in changes.items():
+            if value is None:
+                data.pop(key, None)
+            else:
+                data[key] = value
+        # A newly supplied secret takes precedence over an old token.
+        if changes.get("IGDB_CLIENT_SECRET") and "IGDB_ACCESS_TOKEN" not in changes:
+            data["IGDB_ACCESS_TOKEN"] = ""
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=self.keys_file.parent, delete=False) as stream:
+            staged = Path(stream.name)
+            try:
+                json.dump(data, stream)
+                stream.close()
+                staged.replace(self.keys_file)
+            finally:
+                staged.unlink(missing_ok=True)
+
+    def credentials(self):
+        return {**{key: os.getenv(key) for key in ARTWORK_KEYS}, **self.saved_keys()}
+
+    def providers(self):
+        keys = self.credentials()
+        return {
+            PS_STORE_SOURCE: True,
+            "IGDB": bool(keys["IGDB_CLIENT_ID"] and (keys["IGDB_ACCESS_TOKEN"] or keys["IGDB_CLIENT_SECRET"])),
+            "SteamGridDB": bool(keys["STEAMGRIDDB_API_KEY"]),
+        }
 
     def igdb(self, client, title, platform):
-        client_id = os.getenv("IGDB_CLIENT_ID")
-        token = os.getenv("IGDB_ACCESS_TOKEN")
+        keys = self.credentials()
+        client_id = keys["IGDB_CLIENT_ID"]
+        token = keys["IGDB_ACCESS_TOKEN"]
         if not token:
-            if not self.token or self.token_expiry <= time.monotonic():
+            identity = client_id, keys["IGDB_CLIENT_SECRET"]
+            cached = self.igdb_token
+            if cached and cached[0] == identity and cached[2] > time.monotonic():
+                token = cached[1]
+            else:
                 response = client.post("https://id.twitch.tv/oauth2/token", data={
-                    "client_id": client_id, "client_secret": os.getenv("IGDB_CLIENT_SECRET"),
+                    "client_id": client_id, "client_secret": identity[1],
                     "grant_type": "client_credentials",
                 })
                 response.raise_for_status()
                 data = response.json()
-                self.token = data["access_token"]
-                self.token_expiry = time.monotonic() + max(0, data["expires_in"] - 60)
-            token = self.token
+                token = data["access_token"]
+                self.igdb_token = identity, token, time.monotonic() + max(0, data["expires_in"] - 60)
         platform_id = 167 if platform == "PS5" else 48
         query = (
             "search " + json.dumps(title, ensure_ascii=False) + "; "
@@ -484,7 +519,7 @@ class Artwork:
             response.raise_for_status()
         except httpx.HTTPStatusError as error:
             if error.response.status_code == 401:
-                self.token = None
+                self.igdb_token = None
             raise
         result = []
         for row in response.json():
@@ -499,7 +534,7 @@ class Artwork:
         return result
 
     def steamgrid(self, client, title):
-        headers = {"Authorization": "Bearer " + os.environ["STEAMGRIDDB_API_KEY"]}
+        headers = {"Authorization": "Bearer " + (self.credentials()["STEAMGRIDDB_API_KEY"] or "")}
         base = "https://www.steamgriddb.com/api/v2"
         response = client.get(base + "/search/autocomplete/" + quote(title, safe=""), headers=headers)
         response.raise_for_status()
@@ -544,7 +579,7 @@ class Artwork:
         return []
 
     def search(self, title, platform, content_id=None):
-        available = providers()
+        available = self.providers()
         found, issues = [], []
         with httpx.Client(timeout=7, follow_redirects=False) as client:
             sources = ((PS_STORE_SOURCE, lambda: self.playstation(client, title, content_id)),

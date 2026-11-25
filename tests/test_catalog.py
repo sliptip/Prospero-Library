@@ -489,6 +489,46 @@ class LocalCatalogTest(unittest.TestCase):
         self.assertEqual(self.client.post("/api/backups/restore", json={"name": backup}).status_code, 200)
         self.assertEqual(self.client.get(self.initial()["cover"]).content, content)
 
+    def test_artwork_keys_are_saved_privately_and_used_by_providers(self):
+        path = "/api/settings/artwork"
+        keys = {"IGDB_CLIENT_ID": "test-art-client", "IGDB_CLIENT_SECRET": "test-art-secret",
+                "STEAMGRIDDB_API_KEY": "test-art-grid"}
+        with patch.dict(os.environ, {"IGDB_ACCESS_TOKEN": "older-token"}):
+            response = self.client.patch(path, json=keys)
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertTrue(response.json()["providers"]["IGDB"])
+            self.assertTrue(response.json()["providers"]["SteamGridDB"])
+            settings = self.client.get("/api/settings").text
+            for value in keys.values():
+                self.assertNotIn(value, response.text)
+                self.assertNotIn(value, settings)
+            rejected = self.client.patch(path, json={"STEAMGRIDDB_API_KEY": "invalid secret"})
+            self.assertEqual(rejected.status_code, 422)
+            self.assertNotIn("invalid secret", rejected.text)
+
+            paths = []
+
+            def respond(request):
+                paths.append(request.url.host)
+                if request.url.host == "id.twitch.tv":
+                    self.assertIn(b"client_secret=test-art-secret", request.content)
+                    return httpx.Response(200, json={"access_token": "fresh-token", "expires_in": 3600})
+                if request.url.host == "api.igdb.com":
+                    self.assertEqual(request.headers["Authorization"], "Bearer fresh-token")
+                    self.assertEqual(request.headers["Client-ID"], keys["IGDB_CLIENT_ID"])
+                    return httpx.Response(200, json=[])
+                self.assertEqual(request.headers["Authorization"], "Bearer test-art-grid")
+                return httpx.Response(200, json={"data": []})
+
+            with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+                store = artwork.Artwork(self.data)
+                store.igdb(client, "Cuphead", "PS4")
+                store.steamgrid(client, "Cuphead")
+            self.assertEqual(paths, ["id.twitch.tv", "api.igdb.com", "www.steamgriddb.com"])
+        backup = self.client.post("/api/backups").json()["name"]
+        with ZipFile(self.data / "backups" / backup) as archive:
+            self.assertNotIn("artwork-keys.json", archive.namelist())
+
     def test_store_art_uses_regional_page_for_the_same_product(self):
         content_id = "EP9000-CUSA03173_00-BLOODBORNE0000EU"
         url = "https://image.api.playstation.com/vulcan/bloodborne.jpg"
@@ -532,7 +572,7 @@ class LocalCatalogTest(unittest.TestCase):
         self.client.post("/api/roots", json={"path": str(folder)})
         with patch.object(scanner, "cli_path", return_value=Path("fpkg-cli")), patch.object(
             scanner, "invoke", side_effect=[(0, CASTLEVANIA_INFO), (1, "No art")]
-        ), patch.object(scanner, "providers", return_value={"IGDB": False}):
+        ), patch.object(artwork.Artwork, "providers", return_value={"IGDB": False}):
             self.assertEqual(self.wait_job(self.client.post("/api/scan", json={}))["report"]["added"], 1)
         game = self.initial()
         self.assertEqual(game["file_state"], "online")
@@ -634,7 +674,7 @@ class LocalCatalogTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         url = response.json()["cover"]
         with Image.open(io.BytesIO(self.client.get(url).content)) as stored:
-            self.assertEqual(3 * stored.width, 2 * stored.height)
+            self.assertEqual(stored.size, (280, 600))
         name = self.client.post("/api/backups").json()["name"]
         archive = self.client.get("/api/backups/" + name)
         self.assertEqual(archive.status_code, 200)
@@ -927,8 +967,9 @@ class LocalCatalogTest(unittest.TestCase):
         client = httpx.Client(transport=httpx.MockTransport(respond))
         with patch.object(patches.httpx, "Client", return_value=client):
             self.assertEqual(self.wait_job(self.client.post("/api/updates?game_id=1"))["report"]["updated"], 1)
-        self.assertEqual(requests, [("GET", VERSION_URI), ("GET", f"{patches.PATCH_SITE_URL}/{title}"),
-                                    ("POST", f"{patches.PATCH_SITE_URL}/api/internal/loadpatches")])
+        site_url = f"https://{patches.PATCH_SITE_HOST}"
+        self.assertEqual(requests, [("GET", VERSION_URI), ("GET", f"{site_url}/{title}"),
+                                    ("POST", f"{site_url}/api/internal/loadpatches")])
         result = self.initial()["patch"]
         self.assertEqual(result["check"]["source"], "ProsperoPatches")
         self.assertEqual(result["latest"]["firmware"], "14.20.00.07")
@@ -936,3 +977,34 @@ class LocalCatalogTest(unittest.TestCase):
         self.assertEqual(len(result["history"]), 3)
         self.assertIsNone(result["compatible"])
         self.assertEqual(patches.decode_manifest_firmware("systemver", "337641479", title), "14.20.00.07")
+
+    def test_orbispatches_checks_ps4_games_without_a_sony_manifest(self):
+        title = "CUSA20469"
+        key = "b" * 64
+        saved = self.client.post("/api/games", json={"title": "Cuphead", "platform": "PS4",
+                                                       "title_id": title, "version": "01.05"})
+        self.assertEqual(saved.status_code, 201, saved.text)
+        game_id = saved.json()["id"]
+        entries = [{"version": "01.01", "required_firmware": "7.51"},
+                   {"version": "01.05", "required_firmware": "9.60"}]
+        paths = []
+
+        def respond(request):
+            self.assertEqual(request.url.host, patches.ORBIS_PATCH_HOST)
+            paths.append((request.method, request.url.path))
+            if request.method == "GET":
+                return httpx.Response(200, text=f"""<div id="dynpatch"
+                    data-loadparams="{{ 'titleid': '{title}', 'key': '{key}' }}"></div>""")
+            self.assertEqual(json.loads(request.content), {"titleid": title, "key": key})
+            return httpx.Response(200, json={"success": True, "titleid": title, "patches": entries})
+
+        client = httpx.Client(transport=httpx.MockTransport(respond))
+        with patch.object(patches.httpx, "Client", return_value=client):
+            report = self.wait_job(self.client.post(f"/api/updates?game_id={game_id}"))["report"]
+        self.assertEqual((report["updated"], report["errors"]), (1, 0), report)
+        self.assertEqual(paths, [("GET", "/" + title), ("POST", "/api/internal/loadpatches")])
+        update = self.client.get(f"/api/games/{game_id}").json()["patch"]
+        self.assertEqual(update["state"], "current")
+        self.assertEqual(update["latest"]["source"], "OrbisPatches")
+        self.assertEqual(update["latest"]["version"], "01.05")
+        self.assertEqual(update["latest"]["firmware"], "9.60")
