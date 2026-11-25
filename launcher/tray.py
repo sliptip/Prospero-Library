@@ -8,7 +8,6 @@ import sys
 import time
 import webbrowser
 from ctypes import wintypes
-from pathlib import Path
 from threading import Thread
 from urllib.error import URLError
 from urllib.request import ProxyHandler, Request, build_opener
@@ -17,7 +16,7 @@ import uvicorn
 from dotenv import load_dotenv
 from PIL import Image, ImageDraw
 
-from backend.database import BASE, DEFAULT_DATA
+from backend.database import APP_DIRECTORY, app_data_directory
 
 TITLE = "Prospero Library"
 REG_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -26,10 +25,8 @@ LOCAL_HTTP = build_opener(ProxyHandler({}))
 
 
 def data_directory():
-    portable = Path(sys.executable).parent if getattr(sys, "frozen", False) else BASE
-    load_dotenv(portable / ".env")
-    load_dotenv(DEFAULT_DATA / ".env")
-    return Path(os.getenv("PROSPERO_DATA") or DEFAULT_DATA).expanduser().resolve()
+    load_dotenv(APP_DIRECTORY / ".env")
+    return app_data_directory()
 
 
 def tray_icon():

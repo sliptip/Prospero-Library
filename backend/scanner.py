@@ -6,7 +6,6 @@ import re
 import shutil
 import stat
 import subprocess
-import sys
 import tempfile
 import time
 from pathlib import Path
@@ -15,7 +14,7 @@ import httpx
 
 from .artwork import LANGUAGE_PACK, MAX_IMAGE, PS_STORE_PRODUCT, PS_STORE_SOURCE, Artwork, bounded_get, providers, store_image
 from .catalog import version_key
-from .database import BASE, now
+from .database import APP_DIRECTORY, now
 from .seed import PUBLISHER_METADATA
 
 TITLE_ID = re.compile(r"(?<![A-Z0-9])(?:PPSA|CUSA)[0-9]{5}", re.I)
@@ -30,7 +29,6 @@ PS4_PATCH = re.compile(r"\b(?:gp|gdp|ps4(?:dp|patch)|patch|update)\b", re.I)
 PS4_DLC = re.compile(r"\b(?:ac|al|ps4ac|ps4al|dlc|add[- ]?on|additional content|addcont)\b", re.I)
 PS4_INFO_ROW = re.compile(r"^\s*(Title ID|Content ID|Title|Category|VERSION)[ \t]{2,}(\S.*)$", re.I)
 WORK_DIRECTORY = "_workhard"
-APP_DIRECTORY = Path(sys.executable).parent if getattr(sys, "frozen", False) else BASE
 LOCAL_CLI_DIRECTORY = APP_DIRECTORY / "tools" / "fpkg-cli"
 CLI_FILENAME = "fpkg-cli.exe" if os.name == "nt" else "fpkg-cli"
 logger = logging.getLogger(__name__)

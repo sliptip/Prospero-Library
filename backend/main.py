@@ -22,7 +22,7 @@ from . import __version__, catalog, patches, scanner
 from .artwork import (ART_NAME, MAX_IMAGE, PS_STORE_HOST, PS_STORE_SOURCE, Artwork, bounded_get, playstation_about,
                       playstation_description, playstation_dlc, playstation_url, providers, store_image)
 from .backup import BUNDLE_NAME, create_backup, restore_backup
-from .database import BASE, DEFAULT_DATA, Database
+from .database import APP_DIRECTORY, BASE, Database, app_data_directory
 from .jobs import Jobs
 
 TITLE = "Prospero Library"
@@ -67,8 +67,8 @@ class GameSwap(BaseModel):
 
 
 def create_app(data_directory=None, frontend_directory=None):
-    load_dotenv(BASE / ".env")
-    database = Database(data_directory or os.getenv("PROSPERO_DATA") or DEFAULT_DATA)
+    load_dotenv(APP_DIRECTORY / ".env")
+    database = Database(data_directory if data_directory is not None else app_data_directory())
     jobs = Jobs(database)
     artwork = Artwork()
     candidates = {}

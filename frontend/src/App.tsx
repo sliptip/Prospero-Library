@@ -134,7 +134,6 @@ export function App() {
           </a>
         })}
       </nav>
-      <div className="sidebar-footer"><span className="connection-dot" /><span>Локальная библиотека</span></div>
     </aside>
     <div className="app-main">
       <header className="topbar">

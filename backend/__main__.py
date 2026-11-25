@@ -3,11 +3,11 @@ import os
 import uvicorn
 from dotenv import load_dotenv
 
-from .database import BASE
+from .database import APP_DIRECTORY
 
 
 def main():
-    load_dotenv(BASE / ".env")
+    load_dotenv(APP_DIRECTORY / ".env")
     port = int(os.getenv("PROSPERO_PORT", "8000"))
     host = os.getenv("PROSPERO_HOST", "127.0.0.1")
     if not 1 <= port <= 65535:

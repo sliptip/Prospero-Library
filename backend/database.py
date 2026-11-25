@@ -1,12 +1,13 @@
 import os
 import sqlite3
+import sys
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
 
 BASE = Path(__file__).resolve().parent.parent
-DEFAULT_DATA = Path(os.getenv("LOCALAPPDATA", Path.home() / ".local" / "share")) / "Prospero Library"
+APP_DIRECTORY = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else BASE
 APP_ID = 1347571527
 SCHEMA_VERSION = 4
 SCHEMA = """
@@ -83,6 +84,11 @@ SCHEMAS[4] = SCHEMAS[3] + PS4_EXTRA_SCHEMA + PS4_EXTRA_INDEX
 
 def now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def app_data_directory():
+    path = Path(os.getenv("PROSPERO_DATA") or "data").expanduser()
+    return (APP_DIRECTORY / path).resolve()
 
 
 def upgrade(db, version):

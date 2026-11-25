@@ -15,7 +15,7 @@ import httpx
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from backend import artwork, catalog, patches, scanner
+from backend import artwork, catalog, database, patches, scanner
 from backend.main import create_app
 from backend.seed import VERSION_URI
 
@@ -37,6 +37,45 @@ CASTLEVANIA_INFO = """[General]
 def game_body(game, **changes):
     fields = set(catalog.GameInput.model_fields)
     return {**{key: value for key, value in game.items() if key in fields}, **changes}
+
+
+class PortableDataTest(unittest.TestCase):
+    def test_default_data_moves_with_the_program_folder(self):
+        with TemporaryDirectory() as temporary, patch.dict(os.environ, {"PROSPERO_DATA": "", "PROSPERO_EMPTY_LIBRARY": "0"}):
+            program = Path(temporary) / "Prospero Library"
+            moved = Path(temporary) / "Другой диск"
+            legacy = program.parent / "LocalAppData" / "Prospero Library"
+            database.Database(legacy).initialize()
+            with sqlite3.connect(legacy / "library.db") as db:
+                db.execute("UPDATE games SET notes='Старая библиотека'")
+            with patch.dict(os.environ, {"LOCALAPPDATA": str(legacy.parent)}), \
+                    patch.object(database, "APP_DIRECTORY", program), patch("backend.main.APP_DIRECTORY", program), \
+                    TestClient(create_app(), base_url="http://localhost") as client:
+                self.assertNotEqual(client.get("/api/games/1").json()["notes"], "Старая библиотека")
+                self.assertEqual(client.get("/api/logs").status_code, 200)
+            data = program / "data"
+            self.assertTrue((data / "library.db").is_file())
+            self.assertTrue((data / "logs" / "prospero.log").is_file())
+            self.assertTrue((data / "artwork").is_dir())
+            self.assertTrue((data / "backups").is_dir())
+            with sqlite3.connect(data / "library.db") as db:
+                db.execute("UPDATE games SET notes='Переносимая библиотека'")
+            program.rename(moved)
+            with patch.object(database, "APP_DIRECTORY", moved), patch("backend.main.APP_DIRECTORY", moved), \
+                    TestClient(create_app(), base_url="http://localhost") as client:
+                self.assertEqual(client.get("/api/games/1").json()["notes"], "Переносимая библиотека")
+            with sqlite3.connect(legacy / "library.db") as db:
+                self.assertEqual(db.execute("SELECT notes FROM games").fetchone()[0], "Старая библиотека")
+
+    def test_data_overrides_support_relative_and_absolute_paths(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            program = root / "Prospero"
+            with patch.object(database, "APP_DIRECTORY", program):
+                for configured, expected in (("collection/data", program / "collection/data"),
+                                             (str(root / "other"), root / "other")):
+                    with self.subTest(configured=configured), patch.dict(os.environ, {"PROSPERO_DATA": configured}):
+                        self.assertEqual(database.app_data_directory(), expected)
 
 
 class LocalCatalogTest(unittest.TestCase):
