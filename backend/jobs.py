@@ -3,6 +3,7 @@ import logging
 from threading import Event, RLock, Thread
 
 from .database import now
+from .patches import check_all
 from .scanner import MetadataError
 
 logger = logging.getLogger(__name__)
@@ -15,6 +16,19 @@ class Jobs:
         self.stop = Event()
         self.thread = None
         self.active = None
+        self.pending_checks = set()
+        self.closed = False
+
+    def check_new_game(self, game_id):
+        with self.lock:
+            self.pending_checks.add(game_id)
+            self._start_pending_checks()
+
+    def _start_pending_checks(self):
+        if self.closed or self.active is not None or not self.pending_checks:
+            return
+        self.start("updates", check_all, game_ids=sorted(self.pending_checks))
+        self.pending_checks.clear()
 
     def start(self, kind, worker, **options):
         with self.lock:
@@ -63,9 +77,10 @@ class Jobs:
                                    (json.dumps(report, ensure_ascii=False), state, now(), job_id))
                 finally:
                     self.active = None
+                self._start_pending_checks()
 
     def get(self, job_id=None):
-        with self.database.connect() as db:
+        with self.lock, self.database.connect() as db:
             if job_id is None:
                 row = db.execute("SELECT * FROM jobs ORDER BY id DESC LIMIT 1").fetchone()
             else:
@@ -86,6 +101,9 @@ class Jobs:
             return self.get(job_id)
 
     def close(self):
-        self.stop.set()
-        if self.thread:
-            self.thread.join(timeout=50)
+        with self.lock:
+            self.closed = True
+            self.stop.set()
+            thread = self.thread
+        if thread:
+            thread.join(timeout=50)

@@ -87,6 +87,9 @@ class LocalCatalogTest(unittest.TestCase):
         self.env = patch.dict(os.environ, {"PROSPERO_EMPTY_LIBRARY": "0"})
         self.env.start()
         self.addCleanup(self.env.stop)
+        self.automatic_checks = patch("backend.jobs.Jobs.check_new_game")
+        self.automatic_checks.start()
+        self.addCleanup(self.automatic_checks.stop)
         self.client = TestClient(create_app(self.data), base_url="http://localhost")
         self.client.__enter__()
         self.addCleanup(self.client.__exit__, None, None, None)
@@ -96,7 +99,9 @@ class LocalCatalogTest(unittest.TestCase):
 
     def wait_job(self, response):
         self.assertEqual(response.status_code, 202, response.text)
-        job = response.json()
+        return self.wait_for_job(response.json())
+
+    def wait_for_job(self, job):
         timeout = time.monotonic() + 8
         while job["status"] in {"running", "cancelling"} and time.monotonic() < timeout:
             time.sleep(.05)
@@ -934,7 +939,16 @@ class LocalCatalogTest(unittest.TestCase):
             examples[base.name] = ps4_info("Example: Edition", "CUSA12345", content_id, "gd", "01.00")
             base.write_bytes(b"\x7fCNT base fixture")
             os.utime(base, (time.time() - 15,) * 2)
-            self.assertEqual(scan()["added"], 1)
+            self.automatic_checks.stop()
+            official_patch = {"version": "01.10", "firmware": None, "size_bytes": None}
+            client = httpx.Client(transport=httpx.MockTransport(lambda req: httpx.Response(404)))
+            with patch.object(patches.httpx, "Client", return_value=client), \
+                    patch.object(patches, "retrieve_patch_site", return_value=[official_patch]) as archive:
+                self.assertEqual(scan()["added"], 1)
+                automatic = self.wait_for_job(self.client.get("/api/jobs/latest").json())
+            self.assertEqual((automatic["kind"], automatic["report"]["updated"]), ("updates", 1),
+                             self.client.get("/api/logs").json()["text"])
+            self.assertEqual(archive.call_args.args[1], "CUSA12345")
             game = next(game for game in self.client.get("/api/games").json() if game["title_id"] == "CUSA12345")
             url = f"/api/games/{game['id']}"
             self.assertEqual(game["title"], "Example: Edition")
@@ -947,12 +961,34 @@ class LocalCatalogTest(unittest.TestCase):
             self.assertEqual(cli.call_count, 7)
             self.assertEqual(scan()["skipped"], 6)
             self.assertEqual(cli.call_count, 8)
-            with sqlite3.connect(self.data / "library.db") as db:
-                stamp = "2026-11-25T12:00:00+00:00"
-                db.execute("INSERT INTO checks VALUES (?,'ok','Test',?,?,NULL,'01.10')", (game["id"], stamp, stamp))
-                db.execute("INSERT INTO patch_history VALUES (?,'01.10',NULL,'Test',?,NULL)", (game["id"], stamp))
             self.assertEqual(self.client.get(url).json()["patch"]["state"], "current")
-            (folder / "01 patch.pkg").unlink()
+            self.assertEqual(self.client.get("/api/jobs/latest").json()["kind"], "scan")
+
+            unplugged = folder.with_name("Disconnected PS4")
+            folder.rename(unplugged)
+            scan()
+            disconnected = self.client.get(url).json()
+            self.assertEqual(disconnected["file_state"], "offline")
+            self.assertEqual(disconnected["patch"]["state"], "unknown")
+            self.assertEqual(disconnected["patch"]["latest"]["version"], "01.10")
+            unplugged.rename(folder)
+            scan()
+            self.assertEqual(self.client.get(url).json()["patch"]["state"], "current")
+
+            patch_folder = self.root / "PS4 updates"
+            patch_folder.mkdir()
+            patch_file = folder / "01 patch.pkg"
+            patch_file.rename(patch_folder / patch_file.name)
+            self.client.post("/api/roots", json={"path": str(patch_folder)})
+            scan()
+            self.assertEqual(self.client.get(url).json()["patch"]["state"], "current")
+            patch_folder.rename(unplugged)
+            scan()
+            disconnected = self.client.get(url).json()
+            self.assertEqual(disconnected["file_state"], "online")
+            self.assertEqual(disconnected["patch"]["state"], "unknown")
+            unplugged.rename(patch_folder)
+            (patch_folder / patch_file.name).unlink()
             scan()
             offline = self.client.get(url).json()
             self.assertEqual(offline["collection_version"], "01.02")
@@ -1050,10 +1086,6 @@ class LocalCatalogTest(unittest.TestCase):
     def test_orbispatches_checks_ps4_games_without_a_sony_manifest(self):
         title = "CUSA20469"
         key = "b" * 64
-        saved = self.client.post("/api/games", json={"title": "Cuphead", "platform": "PS4",
-                                                       "title_id": title, "version": "01.05"})
-        self.assertEqual(saved.status_code, 201, saved.text)
-        game_id = saved.json()["id"]
         entries = [{"version": "01.01", "required_firmware": "7.51"},
                    {"version": "01.05", "required_firmware": "9.60"}]
         paths = []
@@ -1068,8 +1100,13 @@ class LocalCatalogTest(unittest.TestCase):
             return httpx.Response(200, json={"success": True, "titleid": title, "patches": entries})
 
         client = httpx.Client(transport=httpx.MockTransport(respond))
+        self.automatic_checks.stop()
         with patch.object(patches.httpx, "Client", return_value=client):
-            report = self.wait_job(self.client.post(f"/api/updates?game_id={game_id}"))["report"]
+            saved = self.client.post("/api/games", json={"title": "Cuphead", "platform": "PS4",
+                                                       "title_id": title, "version": "01.05"})
+            self.assertEqual(saved.status_code, 201, saved.text)
+            game_id = saved.json()["id"]
+            report = self.wait_for_job(self.client.get("/api/jobs/latest").json())["report"]
         self.assertEqual((report["updated"], report["errors"]), (1, 0), report)
         self.assertEqual(paths, [("GET", "/" + title), ("POST", "/api/internal/loadpatches")])
         update = self.client.get(f"/api/games/{game_id}").json()["patch"]

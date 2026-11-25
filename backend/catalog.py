@@ -122,7 +122,7 @@ def swap_games(db, source_id, target_id):
     return ordered
 
 
-def patch_view(db, game, target):
+def patch_view(db, game, target, unavailable_patch_version):
     check = db.execute("SELECT * FROM checks WHERE game_id=?", (game["id"],)).fetchone()
     history = [dict(row) for row in db.execute(
         """SELECT version, firmware, source, checked_at, size_bytes FROM patch_history
@@ -146,8 +146,13 @@ def patch_view(db, game, target):
     else:
         compatible = None
     state = "unknown"
-    if latest and version_key(game["collection_version"]):
-        state = "available" if version_key(latest["version"]) > version_key(game["collection_version"]) else "current"
+    local_version = version_key(game["collection_version"])
+    if latest and local_version and game["file_state"] != "offline":
+        official_version = version_key(latest["version"])
+        if local_version >= official_version:
+            state = "current"
+        elif unavailable_patch_version < official_version:
+            state = "available"
     if check and check["state"] == "error":
         state = "error"
     return {"state": state, "latest": latest, "manual": manual, "compatible": compatible, "history": history,
@@ -157,7 +162,8 @@ def patch_view(db, game, target):
 def ps4_packages(db, title_id):
     return [dict(row) for row in db.execute(
         """SELECT x.kind,x.title,x.content_id,x.version,x.firmware,x.size_bytes,x.relpath,
-                  CASE WHEN x.available AND r.state IN ('online','partial') THEN 'online' ELSE 'offline' END file_state
+                  CASE WHEN x.available AND r.state IN ('online','partial') THEN 'online' ELSE 'offline' END file_state,
+                  (x.available AND r.state IN ('offline','unknown')) AS folder_unavailable
            FROM ps4_extras x JOIN roots r ON r.id=x.root_id
            WHERE x.title_id=? ORDER BY x.kind,x.relpath,r.id""", (title_id,),
     )]
@@ -218,15 +224,23 @@ def library(db, game_id=None):
         file_build = build if build.get("linked") else imported
         game["file_state"] = "online" if file_build.get("online") else "offline" if file_build.get("linked") else "unlinked"
         game["local_packages"] = ps4_packages(db, game["title_id"]) if game["platform"] == "PS4" else []
-        patches = (item["version"] for item in game["local_packages"] if item["kind"] == "patch"
-                   and item["file_state"] == "online" and game["file_state"] == "online")
-        game["collection_version"] = max((game["version"], *patches), key=version_key)
+        versions = [game["version"]]
+        unavailable_patch_version = ()
+        for item in game["local_packages"]:
+            folder_unavailable = item.pop("folder_unavailable")
+            if item["kind"] != "patch":
+                continue
+            if item["file_state"] == "online" and game["file_state"] == "online":
+                versions.append(item["version"])
+            elif folder_unavailable:
+                unavailable_patch_version = max(unavailable_patch_version, version_key(item["version"]))
+        game["collection_version"] = max(versions, key=version_key)
         game["dlc"] = [dict(row) for row in db.execute(
             "SELECT name,description,status,content_id FROM dlc WHERE game_id=? ORDER BY id", (game["id"],),
         )]
         for key in ("ru_text", "ru_audio"):
             game[key] = None if game[key] is None else bool(game[key])
-        game["patch"] = patch_view(db, game, config.get(game["platform"].lower() + "_firmware"))
+        game["patch"] = patch_view(db, game, config.get(game["platform"].lower() + "_firmware"), unavailable_patch_version)
         if imported and (alias := aliases.get(str(game["id"]))):
             game["platform"], game["title_id"] = alias
     return games

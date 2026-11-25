@@ -278,9 +278,10 @@ def retrieve_patch_site(client, title):
     return ordered_patches(rows)
 
 
-def check_all(database, report, stop, publish, *, game_id=None):
+def check_all(database, report, stop, publish, *, game_id=None, game_ids=None):
     with database.connect() as db:
-        games = library(db, game_id)
+        games = (library(db, game_id) if game_ids is None
+                 else [game for new_id in game_ids for game in library(db, new_id)])
     verifier = manifest_verifier()
     if verifier is not True:
         logger.info("Проверка TLS через системное хранилище Windows")

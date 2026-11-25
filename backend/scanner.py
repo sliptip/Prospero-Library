@@ -289,7 +289,7 @@ def mark_unavailable(db, root_id, relpath):
         db.execute(f"UPDATE {table} SET available=0 WHERE root_id=? AND relpath=?", (root_id, relpath))
 
 
-def scan(database, state, stop, publish, *, force=False):
+def scan(database, state, stop, publish, *, on_added, force=False):
     with database.connect() as db:
         roots = [dict(row) for row in db.execute("SELECT * FROM roots ORDER BY id")]
         executable = cli_path(db.execute("SELECT value FROM settings WHERE key='cli_path'").fetchone()[0])
@@ -339,7 +339,7 @@ def scan(database, state, stop, publish, *, force=False):
                 state["current"] = path.name
                 publish()
                 try:
-                    result = scan_file(database, root["id"], base, path, relative, executable, stop, force, art)
+                    result = scan_file(database, root["id"], base, path, relative, executable, stop, force, art, on_added)
                     state[result] += 1
                 except (OSError, MetadataError, TimeoutError) as error:
                     if stop.is_set():
@@ -369,7 +369,7 @@ def scan(database, state, stop, publish, *, force=False):
     state.pop("current", None)
 
 
-def scan_file(database, root_id, base, path, relative, executable, stop, force, art):
+def scan_file(database, root_id, base, path, relative, executable, stop, force, art, on_added):
     if path.is_symlink() or not path.resolve().is_relative_to(base):
         with database.connect() as db:
             mark_unavailable(db, root_id, relative)
@@ -402,6 +402,8 @@ def scan_file(database, root_id, base, path, relative, executable, stop, force, 
             return "updated"
         db.execute("DELETE FROM ps4_extras WHERE root_id=? AND relpath=?", (root_id, relative))
         result, game_id, build_id = import_file(db, root_id, relative, metadata, after)
+    if result == "added":
+        on_added(game_id)
     if not stop.is_set():
         enrich_import(database, game_id, build_id, executable, path, metadata, art, stop)
     return result

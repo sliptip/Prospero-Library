@@ -264,11 +264,14 @@ def create_app(data_directory=None, frontend_directory=None):
 
     @app.post("/api/games", status_code=201)
     def add_game(item: catalog.GameInput):
-        try:
-            with database.connect() as db:
-                return catalog.save_game(db, item)
-        except sqlite3.IntegrityError as error:
-            raise HTTPException(409, "Игра с таким Title ID уже есть") from error
+        with jobs.lock:
+            try:
+                with database.connect() as db:
+                    game = catalog.save_game(db, item)
+            except sqlite3.IntegrityError as error:
+                raise HTTPException(409, "Игра с таким Title ID уже есть") from error
+            jobs.check_new_game(game["id"])
+        return game
 
     @app.put("/api/games/{game_id}")
     def update_game(game_id: int, item: catalog.GameInput):
@@ -494,7 +497,7 @@ def create_app(data_directory=None, frontend_directory=None):
 
     @app.post("/api/scan", status_code=202)
     def start_scan(item: ScanInput):
-        return job_start("scan", scanner.scan, force=item.force)
+        return job_start("scan", scanner.scan, force=item.force, on_added=jobs.check_new_game)
 
     @app.post("/api/updates", status_code=202)
     def start_updates(game_id: int | None = None):

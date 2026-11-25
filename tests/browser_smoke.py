@@ -19,6 +19,16 @@ from playwright.sync_api import expect, sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
 HTTP = build_opener(ProxyHandler({}))
+SERVER = """
+from unittest.mock import patch
+from backend import patches
+from backend.__main__ import main
+
+with patch.object(patches, "retrieve_patch_site", return_value=[
+        {"version": "01.005.000", "firmware": "9.60", "size_bytes": None}
+]):
+    main()
+"""
 
 
 @contextmanager
@@ -28,9 +38,9 @@ def server(directory):
         port = port_socket.getsockname()[1]
     base = f"http://127.0.0.1:{port}"
     proc = subprocess.Popen(
-        [sys.executable, "-m", "backend"], cwd=ROOT,
+        [sys.executable, "-c", SERVER], cwd=ROOT,
         env={**os.environ, "PROSPERO_DATA": str(directory), "PROSPERO_PORT": str(port), "PROSPERO_HOST": "127.0.0.1",
-             "PROSPERO_EMPTY_LIBRARY": "0"},
+             "PROSPERO_EMPTY_LIBRARY": "0", "no_proxy": "*", "NO_PROXY": "*"},
     )
     try:
         for _ in range(100):
@@ -298,8 +308,12 @@ def run(screenshots, browser_executable):
             page.get_by_role("button", name="Добавить игру", exact=True).first.click()
             page.get_by_role("textbox", name="Название", exact=True).fill("Тестовая карточка")
             page.get_by_role("textbox", name="Title ID").fill("PPSA99999")
+            page.get_by_label("Версия в коллекции").fill("01.000.000")
             page.get_by_role("dialog").get_by_role("button", name="Сохранить", exact=True).click()
             expect(page.get_by_role("heading", name="Тестовая карточка")).to_be_visible()
+            official_patch = page.get_by_text("Последний официальный патч", exact=True).locator("..")
+            expect(official_patch.get_by_text("01.005.000", exact=True)).to_be_visible()
+            expect(page.get_by_text("Есть обновление", exact=True)).to_be_visible()
             expect(page.get_by_role("button", name="Об игре")).to_have_count(0)
             expect(page.get_by_text("Источник русификации")).to_have_count(0)
             page.get_by_role("link", name="Библиотека").click()
@@ -391,6 +405,12 @@ def run(screenshots, browser_executable):
             filename = expansion_row.locator(".package-file")
             expect(filename).to_contain_text("delicious.pkg")
             expect(filename).to_have_css("border-top-width", "1px")
+            with sqlite3.connect(directory / "data" / "library.db") as db:
+                db.execute("UPDATE roots SET state='offline' WHERE id=?", (root_id,))
+            page.goto(restarted, wait_until="networkidle")
+            expect(cuphead.locator(".collection-patch-status")).to_have_count(0)
+            expect(page.locator(".game-tile").filter(has_text="Castlevania")
+                   .get_by_role("img", name="Есть обновление")).to_be_visible()
             assert not errors, errors
     print("Browser smoke passed: desktop/tablet/phone, journal, edit, artwork, manual order, restart, backup and restore.")
 

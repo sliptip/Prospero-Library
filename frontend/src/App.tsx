@@ -24,6 +24,7 @@ export function App() {
   const [query, setQuery] = useState('')
   const [job, setJob] = useState<Job | null>(null)
   const [jobOpen, setJobOpen] = useState(new URLSearchParams(window.location.search).has('job'))
+  const [finishedReport, setFinishedReport] = useState<Job | null>(null)
   const [journalOpen, setJournalOpen] = useState(false)
   const [mode, setMode] = useState<'new' | 'edit' | 'art' | null>(null)
   const [error, setError] = useState('')
@@ -75,14 +76,17 @@ export function App() {
     if (!active(job) || !job) return
     let mounted = true
     const timer = window.setTimeout(() => {
-      void api<Job>('/jobs/' + job.id).then(result => {
+      void api<Job>('/jobs/' + job.id).then(async result => {
+        const latest = active(result) ? null : await api<Job | null>('/jobs/latest')
         if (!mounted) return
-        setJob(result)
+        const next = latest && latest.id > result.id ? latest : result
+        if (next.id !== result.id && jobOpen) setFinishedReport(previous => previous ?? result)
+        setJob(current => current && current.id > next.id ? current : next)
         if (!active(result)) void refresh().catch(showError)
       }).catch(failure => { if (mounted) { showError(failure); setJob(null) } })
     }, 700)
     return () => { mounted = false; clearTimeout(timer) }
-  }, [job, refresh])
+  }, [job, jobOpen, refresh])
 
   useEffect(() => {
     if (!notice) return
@@ -90,13 +94,18 @@ export function App() {
     return () => clearTimeout(timeout)
   }, [notice])
 
+  function openJob() {
+    setFinishedReport(null)
+    setJobOpen(true)
+  }
+
   async function start(path: string, body?: unknown) {
-    if (active(job) || starting) { setJobOpen(true); return }
+    if (active(job) || starting) { openJob(); return }
     setStarting(true)
     setError('')
     try {
       setJob(await api<Job>(path, body ? json('POST', body) : { method: 'POST' }))
-      setJobOpen(true)
+      openJob()
     } catch (failure) { showError(failure) }
     finally { setStarting(false) }
   }
@@ -119,7 +128,14 @@ export function App() {
     if (mode !== 'art') setMode(null)
     showGame(game.id)
     setNotice('Сохранено')
+    if (mode === 'new') {
+      void api<Job | null>('/jobs/latest').then(latest => {
+        setJob(current => !current || (latest && latest.id > current.id) ? latest : current)
+        if (!active(latest)) return refresh()
+      }).catch(showError)
+    }
   }
+  const report = finishedReport ?? job
 
   return <div className="app-shell">
     <aside className="sidebar">
@@ -147,7 +163,7 @@ export function App() {
           {query ? <button className="icon-button" onClick={() => { setQuery(''); input.current?.focus() }} aria-label="Очистить поиск"><X size={15} /></button> : <kbd>Ctrl K</kbd>}
         </label>
         <div className="top-actions">
-          {job && <button className={'icon-button job-button ' + (active(job) ? 'working' : '')} aria-label="Ход операции" title="Ход операции" onClick={() => setJobOpen(true)}><Activity size={19} /></button>}
+          {job && <button className={'icon-button job-button ' + (active(job) ? 'working' : '')} aria-label="Ход операции" title="Ход операции" onClick={openJob}><Activity size={19} /></button>}
           <button className="button outlined top-scan" aria-label="Сканировать" title="Сканировать коллекцию" disabled={updating} onClick={() => void start('/scan', { force: false })}><ScanLine size={18} /> <span>Сканировать</span></button>
           <button className="button primary" aria-label="Добавить игру" title="Добавить игру" onClick={() => setMode('new')}><Plus size={19} /> <span>Добавить игру</span></button>
         </div>
@@ -176,8 +192,8 @@ export function App() {
     {mode === 'new' && <GameEditor close={() => setMode(null)} save={saveGame} />}
     {mode === 'edit' && current && <GameEditor game={current} close={() => setMode(null)} save={saveGame} />}
     {mode === 'art' && current && <ArtworkDialog game={current} close={() => setMode(null)} save={saveGame} />}
-    {jobOpen && job && <JobDialog job={job} close={() => setJobOpen(false)} openJournal={() => setJournalOpen(true)} cancel={() =>
-      void api<Job>('/jobs/' + job.id + '/cancel', { method: 'POST' }).then(setJob).catch(showError)} />}
+    {jobOpen && report && <JobDialog job={report} close={() => setJobOpen(false)} openJournal={() => setJournalOpen(true)} cancel={() =>
+      void api<Job>('/jobs/' + report.id + '/cancel', { method: 'POST' }).then(setJob).catch(showError)} />}
     {journalOpen && <JournalDialog close={() => setJournalOpen(false)} />}
   </div>
 }
