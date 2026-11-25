@@ -17,7 +17,10 @@ export type Game = {
   cover_source: string | null; background_source: string | null; file_state: 'online' | 'offline' | 'unlinked';
   package_fields: string[]; package_identity: { platform: Platform; title_id: string } | null; content_id: string | null;
 }
-export type GameAbout = { description: string; publisher: string | null; genres: string[]; url: string }
+export type GameAbout = {
+  description: string | null; language: 'ru' | 'en'; publisher: string | null; genres: string[];
+  release_date: string | null; players: string | null; url: string;
+}
 export type Root = { id: number; path: string; state: 'offline' | 'online' | 'unknown' | 'partial' }
 export type Settings = { cli_path: string; cli_local: boolean; ps4_firmware: string; ps5_firmware: string; roots: Root[]; providers: Record<string, boolean> }
 export type Job = {

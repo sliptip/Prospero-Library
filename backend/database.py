@@ -8,6 +8,7 @@ from threading import RLock
 BASE = Path(__file__).resolve().parent.parent
 DEFAULT_DATA = Path(os.getenv("LOCALAPPDATA", Path.home() / ".local" / "share")) / "Prospero Library"
 APP_ID = 1347571527
+SCHEMA_VERSION = 2
 SCHEMA = """
 CREATE TABLE games (
     id INTEGER PRIMARY KEY, platform TEXT NOT NULL, title_id TEXT NOT NULL,
@@ -50,10 +51,23 @@ CREATE TABLE jobs (
     started_at TEXT NOT NULL, finished_at TEXT
 );
 """
+STORE_ABOUT_SCHEMA = """
+CREATE TABLE store_about (
+    content_id TEXT PRIMARY KEY, language TEXT NOT NULL CHECK (language IN ('ru', 'en')), details TEXT NOT NULL
+);
+"""
+SCHEMAS = {1: SCHEMA, 2: SCHEMA + STORE_ABOUT_SCHEMA}
 
 
 def now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def upgrade(db, version):
+    if version == 1:
+        db.execute("BEGIN IMMEDIATE")
+        db.execute(STORE_ABOUT_SCHEMA)
+        db.execute("PRAGMA user_version = 2")
 
 
 class Database:
@@ -86,16 +100,18 @@ class Database:
                 if existing:
                     raise RuntimeError("Неизвестная схема базы Prospero Library")
                 from .seed import initial_game
-                db.executescript(f"BEGIN IMMEDIATE; {SCHEMA}")
+                db.executescript(f"BEGIN IMMEDIATE; {SCHEMAS[SCHEMA_VERSION]}")
                 db.execute(f"PRAGMA application_id = {APP_ID}")
-                db.execute("PRAGMA user_version = 1")
+                db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
                 db.executemany("INSERT INTO settings VALUES (?, ?)", [
                     ("ps5_firmware", "13.60"), ("ps4_firmware", ""), ("cli_path", ""),
                 ])
                 if os.getenv("PROSPERO_EMPTY_LIBRARY") != "1":
                     initial_game(db)
-            elif version != 1 or db.execute("PRAGMA application_id").fetchone()[0] != APP_ID:
+            elif version not in SCHEMAS or db.execute("PRAGMA application_id").fetchone()[0] != APP_ID:
                 raise RuntimeError("Неподдерживаемая версия базы Prospero Library")
+            else:
+                upgrade(db, version)
             db.execute("UPDATE jobs SET status='interrupted', finished_at=? WHERE status IN ('running','cancelling')", (now(),))
 
     def snapshot(self, destination):

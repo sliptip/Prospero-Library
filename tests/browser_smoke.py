@@ -119,34 +119,47 @@ def run(screenshots, browser_executable):
             page.get_by_role("button", name="Шкаф", exact=True).click()
             expect(page.locator(".game-tile")).to_have_count(1)
 
+            about_requests = []
+
+            def store_about(route):
+                about_requests.append(route.request.url)
+                route.fulfill(json={"description": "Первый абзац.\n\nВторой абзац.", "language": "ru",
+                                    "publisher": "KONAMI", "genres": ["Ролевые игры", "Боевики"],
+                                    "release_date": "2026-10-15", "players": "1",
+                                    "url": "https://store.playstation.com/ru-ua/product/JP0101-PPSA35399_00-CVBCAPP000000000"})
+
+            page.route("**/api/games/1/about", store_about)
             page.get_by_role("button", name="Открыть карточку").click()
             expect(page.get_by_role("heading", name="Игра в коллекции")).to_be_visible()
             expect(page.get_by_text("01.000.000", exact=True)).to_be_visible()
             expect(page.get_by_text("Preorder Alucard Skin DLC", exact=True)).to_be_visible()
             expect(page.get_by_text("Совместимый патч", exact=False)).to_have_count(0)
-            about_requests = []
-
-            def store_about(route):
-                about_requests.append(route.request.url)
-                route.fulfill(json={"description": "First paragraph.\n\nSecond paragraph.",
-                                    "publisher": "KONAMI", "genres": ["Action"],
-                                    "url": "https://store.playstation.com/en-us/product/JP0101-PPSA35399_00-CVBCAPP000000000"})
-
-            page.route("**/api/games/1/about", store_about)
-            about = page.locator("details.about-game")
-            summary = about.locator("summary")
-            expect(summary).to_have_text("Об игре")
-            assert about.get_attribute("open") is None and not about_requests
-            summary.press("Enter")
-            description = about.locator(".about-game-description")
+            header = page.locator(".detail-hero")
+            expect(header.get_by_text("Ролевые игры", exact=True)).to_be_visible()
+            expect(header.get_by_text("KONAMI", exact=True)).to_be_visible()
+            expect(header.get_by_text("Игроки · 1", exact=True)).to_be_visible()
+            about_button = header.get_by_role("button", name="Об игре")
+            about_dialog = page.get_by_role("dialog", name="Об игре")
+            expect(about_dialog).to_have_count(0)
+            assert len(about_requests) == 1
+            about_button.press("Enter")
+            description = about_dialog.locator(".about-game-description")
             expect(description).to_be_visible()
-            assert description.text_content() == "First paragraph.\n\nSecond paragraph."
-            expect(about.get_by_text("KONAMI", exact=True)).to_be_visible()
-            summary.click()
-            expect(description).to_be_hidden()
-            summary.click()
+            expect(description).to_have_attribute("lang", "ru")
+            assert description.text_content() == "Первый абзац.\n\nВторой абзац."
+            page.keyboard.press("Escape")
+            expect(about_dialog).to_have_count(0)
+            about_button.click()
             expect(description).to_be_visible()
             assert len(about_requests) == 1
+            about_dialog.get_by_role("button", name="Закрыть").click()
+            page.set_viewport_size({"width": 390, "height": 844})
+            expect(about_button).to_be_visible()
+            assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+            about_button.click()
+            expect(description).to_be_visible()
+            page.keyboard.press("Escape")
+            page.set_viewport_size({"width": 1440, "height": 1000})
             stamp = "2026-11-25T12:00:00+00:00"
             with sqlite3.connect(directory / "data" / "library.db") as db:
                 db.execute("INSERT INTO builds (game_id,identity,version,firmware,size_bytes) VALUES (1,'test-pkg','01.000.000','13.40',4043482656)")
@@ -208,7 +221,7 @@ def run(screenshots, browser_executable):
             page.get_by_role("textbox", name="Title ID").fill("PPSA99999")
             page.get_by_role("dialog").get_by_role("button", name="Сохранить", exact=True).click()
             expect(page.get_by_role("heading", name="Тестовая карточка")).to_be_visible()
-            expect(page.locator("details.about-game")).to_have_count(0)
+            expect(page.get_by_role("button", name="Об игре")).to_have_count(0)
             page.get_by_role("link", name="Библиотека").click()
             page.get_by_label("Сортировка").select_option("manual")
             tiles = page.locator(".game-tile")

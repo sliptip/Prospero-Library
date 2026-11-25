@@ -9,7 +9,7 @@ from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from .artwork import ART_NAME, MAX_IMAGE
-from .database import APP_ID, SCHEMA, now
+from .database import APP_ID, SCHEMAS, now, upgrade
 from .seed import LEGACY_ART
 
 BUNDLE_NAME = re.compile(r"prospero-[0-9]{8}-[0-9]{6}-[0-9]{6}\.zip")
@@ -79,12 +79,15 @@ def restore_backup(database, file):
 
         with closing(sqlite3.connect(snapshot)) as source, closing(sqlite3.connect(":memory:")) as expected:
             try:
-                expected.executescript(SCHEMA)
-                if (source.execute("PRAGMA application_id").fetchone()[0] != APP_ID or
-                    source.execute("PRAGMA user_version").fetchone()[0] != 1 or schema(source) != schema(expected) or
+                version = source.execute("PRAGMA user_version").fetchone()[0]
+                if source.execute("PRAGMA application_id").fetchone()[0] != APP_ID or version not in SCHEMAS:
+                    raise ValueError("Некорректная или неподдерживаемая база в архиве")
+                expected.executescript(SCHEMAS[version])
+                if (schema(source) != schema(expected) or
                     source.execute("PRAGMA integrity_check").fetchone()[0] != "ok" or
                     source.execute("PRAGMA foreign_key_check").fetchone() or arts != referenced_art(source)):
                     raise ValueError("Некорректная или неподдерживаемая база в архиве")
+                upgrade(source, version)
             except sqlite3.Error as error:
                 raise ValueError("Не удалось прочитать базу в архиве") from error
             protective = create_backup(database)

@@ -2,6 +2,7 @@ import hashlib
 import io
 import json
 import os
+import sqlite3
 import ssl
 import time
 import unittest
@@ -113,18 +114,25 @@ class LocalCatalogTest(unittest.TestCase):
         self.assertNotIn("Prospero Library запущена", after)
         self.assertIn("Укажите папки коллекции в настройках", after)
 
-    def test_game_about_loads_exact_store_product(self):
+    def test_game_about_prefers_russian_and_keeps_the_store_metadata(self):
         content_id = self.initial()["content_id"]
-        product = {"id": content_id, "publisherName": "Publisher", "localizedGenres": [{"value": "Action"}],
-                   "descriptions": [{"type": "SHORT", "value": "Short description"},
-                                    {"type": "LONG", "value": "<p>Introduction &amp; setting</p><h3>Features</h3>"
-                                                               "<ul><li>First</li><li>Second</li></ul>"
+        product = {"id": content_id, "publisherName": "Publisher", "localizedGenres": [{"value": "Боевики"}],
+                   "releaseDate": "2026-10-15T00:00:00Z",
+                   "descriptions": [{"type": "SHORT", "value": "Краткое описание"},
+                                    {"type": "LONG", "value": "<p>Вступление &amp; сюжет</p><h3>Особенности</h3>"
+                                                               "<ul><li>Первый пункт</li><li>Второй пункт</li></ul>"
                                                                "<script>ignored text</script>"}]}
+        product_key = "Product:" + content_id
         cache = json.dumps({"cache": {"Product:" + content_id: product}}).replace("<", "\\u003c")
-        props = {"productId": content_id, "batarangs": {"info": {"text": f"<script>{cache}</script>"}}}
+        notices = json.dumps({"cache": {product_key: {"id": content_id, "compatibilityNoticesByPlatform": {
+            "Common": [{"type": "NO_OF_PLAYERS", "value": "1-2"}]
+        }}}})
+        props = {"productId": content_id, "locale": "ru-ua", "batarangs": {
+            "info": {"text": f"<script>{cache}</script>"}, "compatibility-notices": {"text": f"<script>{notices}</script>"},
+        }}
         data = json.dumps({"props": {"pageProps": props}}).replace("<", "\\u003c")
         page = f'<script id="__NEXT_DATA__">{data}</script>'.encode()
-        url = f"https://store.playstation.com/en-us/product/{content_id}"
+        url = f"https://store.playstation.com/ru-ua/product/{content_id}"
         requests = []
 
         def store(request):
@@ -135,12 +143,103 @@ class LocalCatalogTest(unittest.TestCase):
         with patch("backend.main.httpx.Client", return_value=store_client):
             response = self.client.get("/api/games/1/about")
             self.assertEqual(response.status_code, 200, response.text)
-            self.assertEqual(response.json(), {"description": "Introduction & setting\n\nFeatures\n\n• First\n• Second",
-                                               "publisher": "Publisher", "genres": ["Action"], "url": url})
+            self.assertEqual(response.json(), {"description": "Вступление & сюжет\n\nОсобенности\n\n• Первый пункт\n• Второй пункт",
+                                               "language": "ru", "publisher": "Publisher", "genres": ["Боевики"],
+                                               "release_date": "2026-10-15", "players": "1-2", "url": url})
             manual = self.client.post("/api/games", json={"title": "Manual", "platform": "PS5", "title_id": "PPSA12345"}).json()
             self.assertIsNone(self.client.get(f"/api/games/{manual['id']}/about").json())
         self.assertEqual(requests, [url])
         self.assertIsNone(artwork.playstation_description(page, "UP9000-CUSA07408_00-00000000GODOFWAR"))
+
+        backup = self.client.post("/api/backups").json()["name"]
+        with sqlite3.connect(self.data / "library.db") as db:
+            db.execute("DELETE FROM store_about")
+        self.assertEqual(self.client.post("/api/backups/restore", json={"name": backup}).status_code, 200)
+        with patch("backend.main.httpx.Client", side_effect=AssertionError("Unexpected Store request")), \
+                TestClient(create_app(self.data), base_url="http://localhost") as reopened:
+            self.assertEqual(reopened.get("/api/games/1/about").json(), response.json())
+
+    def test_game_about_falls_back_to_english_when_russian_is_unavailable(self):
+        content_id = self.initial()["content_id"]
+        product = {"id": content_id, "publisherName": "Publisher",
+                   "descriptions": [{"type": "LONG", "value": "Official English description"}]}
+        cache = json.dumps({"cache": {"Product:" + content_id: product}})
+        props = {"productId": content_id, "locale": "en-us", "batarangs": {"info": {"text": f"<script>{cache}</script>"}}}
+        payload = json.dumps({"props": {"pageProps": props}}).replace("<", r"\u003c")
+        requests = []
+
+        def store(request):
+            requests.append(request.url.path)
+            if request.url.path.startswith("/ru-ua/"):
+                return httpx.Response(404)
+            return httpx.Response(200, content=f'<script id="__NEXT_DATA__">{payload}</script>'.encode())
+
+        store_client = httpx.Client(transport=httpx.MockTransport(store))
+        with patch("backend.main.httpx.Client", return_value=store_client):
+            result = self.client.get("/api/games/1/about")
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertEqual(result.json()["language"], "en")
+        self.assertEqual(result.json()["description"], "Official English description")
+        self.assertEqual(requests, [f"/ru-ua/product/{content_id}", f"/en-us/product/{content_id}"])
+
+    def test_game_about_finds_a_russian_edition_of_the_same_concept(self):
+        content_id = self.initial()["content_id"]
+        localized_id = "EP0101-PPSA35400_00-CVBCAPP000000000"
+        concept_key = "Concept:227770"
+
+        def fragment(cache):
+            return {"text": f'<script>{json.dumps({"cache": cache})}</script>'}
+
+        def page(props):
+            payload = json.dumps({"props": {"pageProps": props}}).replace("<", r"\u003c")
+            return f'<script id="__NEXT_DATA__">{payload}</script>'.encode()
+
+        english = {"id": content_id, "releaseDate": "2026-10-15", "concept": {"__ref": concept_key},
+                   "descriptions": [{"type": "LONG", "value": "English description"}]}
+        localized = {"id": localized_id, "releaseDate": "2026-10-14", "localizedGenres": [{"value": "Боевики"}],
+                     "descriptions": [{"type": "LONG", "value": "Официальное описание на русском"}]}
+        requests = []
+
+        def store(request):
+            requests.append(request.url.path)
+            if request.url.path == f"/ru-ua/product/{content_id}":
+                return httpx.Response(404)
+            if request.url.path == f"/en-us/product/{content_id}":
+                return httpx.Response(200, content=page({"productId": content_id, "locale": "en-us",
+                    "batarangs": {"game-title": fragment({f"Product:{content_id}": english})}}))
+            return httpx.Response(200, content=page({"conceptId": "227770", "locale": "ru-ua", "batarangs": {
+                "info": fragment({f"Product:{localized_id}": localized,
+                                  concept_key: {"defaultProduct": {"__ref": f"Product:{localized_id}"}}})}}))
+
+        store_client = httpx.Client(transport=httpx.MockTransport(store))
+        with patch("backend.main.httpx.Client", return_value=store_client):
+            response = self.client.get("/api/games/1/about")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["language"], "ru")
+        self.assertEqual(response.json()["release_date"], "2026-10-15")
+        self.assertEqual(requests, [f"/ru-ua/product/{content_id}", f"/en-us/product/{content_id}", "/ru-ua/concept/227770"])
+
+    def test_version_one_database_and_backup_migrate(self):
+        older = self.root / "old-data"
+        older.mkdir()
+        file = older / "library.db"
+        with sqlite3.connect(self.data / "library.db") as current, sqlite3.connect(file) as legacy:
+            current.backup(legacy)
+            legacy.execute("DROP TABLE store_about")
+            legacy.execute("PRAGMA user_version = 1")
+            legacy.execute("UPDATE games SET notes='Проверка старой библиотеки' WHERE id=1")
+        name = "prospero-20261125-120000-000000.zip"
+        with ZipFile(self.data / "backups" / name, "w") as archive:
+            archive.write(file, "library.db")
+        with TestClient(create_app(older), base_url="http://localhost") as old_app:
+            self.assertEqual(old_app.get("/api/games/1").json()["notes"], "Проверка старой библиотеки")
+        result = self.client.post("/api/backups/restore", json={"name": name})
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertEqual(self.initial()["notes"], "Проверка старой библиотеки")
+        for path in (file, self.data / "library.db"):
+            with sqlite3.connect(path) as db:
+                self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 2)
+                self.assertEqual(db.execute("SELECT count(*) FROM store_about").fetchone()[0], 0)
 
     def test_playstation_store_art_preserves_bytes_and_backup(self):
         content_id = self.initial()["content_id"]

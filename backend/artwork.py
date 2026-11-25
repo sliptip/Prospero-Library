@@ -6,6 +6,7 @@ import re
 import tempfile
 import time
 import unicodedata
+from datetime import date
 from html.parser import HTMLParser
 from urllib.parse import quote, urlsplit
 
@@ -95,26 +96,30 @@ def providers():
     }
 
 
-def playstation_url(content_id):
+def playstation_url(content_id, locale="en-us"):
     if content_id and PS_STORE_PRODUCT.fullmatch(content_id):
-        return f"https://store.playstation.com/en-us/product/{content_id}"
+        return f"https://store.playstation.com/{locale}/product/{content_id}"
     return None
 
 
-def playstation_props(page, content_id):
+def playstation_props(page, content_id=None):
     script = re.search(rb'<script\b[^>]*\bid="__NEXT_DATA__"[^>]*>(.*?)</script>', page, re.S)
     if not script:
         return {}
     props = json.loads(script[1])["props"]["pageProps"]
-    return props if props.get("productId") == content_id else {}
+    return props if content_id is None or props.get("productId") == content_id else {}
 
 
-def playstation_slot(props, slot, content_id):
+def playstation_cache(props, slot):
     fragment = props.get("batarangs", {}).get(slot, {}).get("text", "")
     payload = re.search(r"<script\b[^>]*>(.*?)</script>", fragment, re.S)
     if not payload:
         return {}
-    product = json.loads(payload[1]).get("cache", {}).get("Product:" + content_id, {})
+    return json.loads(payload[1]).get("cache", {})
+
+
+def playstation_slot(props, slot, content_id):
+    product = playstation_cache(props, slot).get("Product:" + content_id, {})
     return product if product.get("id") == content_id else {}
 
 
@@ -179,12 +184,7 @@ class DescriptionText(HTMLParser):
         return re.sub(r"\n{3,}", "\n\n", lines).strip()
 
 
-def playstation_description(page, content_id):
-    props = playstation_props(page, content_id)
-    info = playstation_slot(props, "info", content_id)
-    title = playstation_slot(props, "game-title", content_id)
-    descriptions = [*(info.get("descriptions") or []), *(title.get("descriptions") or [])]
-    genres = info.get("localizedGenres") or title.get("localizedGenres") or []
+def description_text(descriptions):
     for kind in ("LONG", "SHORT"):
         for entry in descriptions:
             if not isinstance(entry, dict) or entry.get("type") != kind:
@@ -196,14 +196,104 @@ def playstation_description(page, content_id):
             parser.feed(value)
             parser.close()
             if text := parser.text():
-                return {
-                    "description": text,
-                    "publisher": info.get("publisherName") or title.get("publisherName"),
-                    "genres": list(dict.fromkeys(genre["value"] for genre in genres
-                                                if isinstance(genre, dict) and isinstance(genre.get("value"), str) and genre["value"])),
-                    "url": playstation_url(content_id),
-                }
+                return text
     return None
+
+
+def playstation_details(props, content_id, locale):
+    info = playstation_slot(props, "info", content_id)
+    title = playstation_slot(props, "game-title", content_id)
+    if not (info or title):
+        return None
+
+    description = description_text([*(info.get("descriptions") or []), *(title.get("descriptions") or [])])
+    genre_values = info.get("localizedGenres") or title.get("localizedGenres") or []
+    genres = list(dict.fromkeys(genre["value"] for genre in genre_values
+                                if isinstance(genre, dict) and isinstance(genre.get("value"), str) and genre["value"]))
+    publisher = info.get("publisherName") or title.get("publisherName")
+    release = info.get("releaseDate") or title.get("releaseDate")
+    try:
+        release_date = date.fromisoformat(release[:10]).isoformat() if isinstance(release, str) else None
+    except ValueError:
+        release_date = None
+    notices = playstation_slot(props, "compatibility-notices", content_id).get("compatibilityNoticesByPlatform") or {}
+    players = next((entry["value"] for entry in (notices.get("Common") or [])
+                    if isinstance(entry, dict) and entry.get("type") == "NO_OF_PLAYERS"
+                    and isinstance(entry.get("value"), str) and re.fullmatch(r"\d+(?:[-–]\d+)?", entry["value"])), None)
+    actual_locale = props.get("locale") or locale
+    russian = actual_locale.startswith("ru-") and bool(description and
+                  len(re.findall("[А-Яа-яЁё]", description)) > len(re.findall("[A-Za-z]", description)))
+    return {
+        "description": description, "language": "ru" if russian else "en",
+        "publisher": publisher if isinstance(publisher, str) else None, "genres": genres,
+        "release_date": release_date, "players": players,
+        "url": playstation_url(content_id, actual_locale if actual_locale in ("ru-ua", "en-us") else locale),
+    }
+
+
+def playstation_description(page, content_id, locale="en-us"):
+    return playstation_details(playstation_props(page, content_id), content_id, locale)
+
+
+def russian_concept(client, product_props, content_id):
+    concept = playstation_slot(product_props, "game-title", content_id).get("concept") or {}
+    ref = concept.get("__ref", "")
+    if not re.fullmatch(r"Concept:[0-9]{1,12}", ref):
+        return None
+    concept_id = ref.split(":", 1)[1]
+    url = f"https://store.playstation.com/ru-ua/concept/{concept_id}"
+    props = playstation_props(bounded_get(client, url, 3_000_000))
+    if str(props.get("conceptId")) != concept_id:
+        return None
+    entry = playstation_cache(props, "info").get(ref, {})
+    default = (entry.get("defaultProduct") or {}).get("__ref", "")
+    localized_id = default.removeprefix("Product:")
+    if not playstation_url(localized_id) or localized_id[7:11] != content_id[7:11]:
+        return None
+    result = playstation_details(props, localized_id, "ru-ua")
+    if result and result["language"] == "ru":
+        result["url"] = url
+        return result
+    return None
+
+
+def playstation_about(client, content_id):
+    metadata, failure = None, None
+    for locale in ("ru-ua", "en-us"):
+        url = playstation_url(content_id, locale)
+        try:
+            props = playstation_props(bounded_get(client, url, 3_000_000), content_id)
+            about = playstation_details(props, content_id, locale)
+        except httpx.HTTPStatusError as error:
+            if not (error.response.is_redirect or error.response.status_code in (404, 410)):
+                failure = error
+            continue
+        except (httpx.HTTPError, KeyError, TypeError, ValueError, AttributeError) as error:
+            failure = error
+            continue
+        if not about:
+            continue
+        if locale == "ru-ua" and about["language"] != "ru":
+            metadata = about
+            continue
+        if locale == "en-us":
+            try:
+                localized = russian_concept(client, props, content_id)
+            except (httpx.HTTPError, KeyError, TypeError, ValueError, AttributeError):
+                localized = None
+            if localized:
+                for key in ("release_date", "players"):
+                    localized[key] = about[key] or localized[key]
+                return localized
+        if about["description"]:
+            if metadata:
+                for key in ("publisher", "genres", "release_date", "players"):
+                    about[key] = metadata[key] or about[key]
+            return about
+        metadata = metadata or about
+    if metadata is None and failure:
+        raise failure
+    return metadata
 
 
 class Artwork:

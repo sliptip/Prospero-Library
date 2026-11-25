@@ -19,8 +19,8 @@ from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import __version__, catalog, patches, scanner
-from .artwork import (ART_NAME, MAX_IMAGE, PS_STORE_HOST, PS_STORE_SOURCE, Artwork, bounded_get,
-                      playstation_description, playstation_url, providers, store_image)
+from .artwork import (ART_NAME, MAX_IMAGE, PS_STORE_HOST, PS_STORE_SOURCE, Artwork, playstation_about,
+                      playstation_url, providers, store_image)
 from .backup import BUNDLE_NAME, create_backup, restore_backup
 from .database import BASE, DEFAULT_DATA, Database
 from .jobs import Jobs
@@ -201,18 +201,28 @@ def create_app(data_directory=None, frontend_directory=None):
     def game_about(game_id: int):
         with database.connect() as db:
             content_id = required_game(db, game_id)["content_id"]
-        if not (url := playstation_url(content_id)):
-            return None
-        try:
-            with httpx.Client(timeout=7, follow_redirects=False) as client:
-                page = bounded_get(client, url, 3_000_000)
-            return playstation_description(page, content_id)
-        except httpx.HTTPStatusError as error:
-            if error.response.status_code in (404, 410):
+            if not playstation_url(content_id):
                 return None
+            cached = db.execute("SELECT details FROM store_about WHERE content_id=?", (content_id,)).fetchone()
+        if cached:
+            return json.loads(cached["details"])
+
+        try:
+            with httpx.Client(timeout=httpx.Timeout(18, connect=5), follow_redirects=False) as client:
+                details = playstation_about(client, content_id)
+        except httpx.HTTPStatusError as error:
             raise HTTPException(502, "PlayStation Store временно недоступен") from error
         except (httpx.HTTPError, KeyError, TypeError, ValueError, AttributeError, ImportError) as error:
             raise HTTPException(502, "Не удалось получить описание из PlayStation Store") from error
+        if details:
+            with database.connect() as db:
+                db.execute(
+                    """INSERT INTO store_about(content_id,language,details) VALUES (?,?,?)
+                       ON CONFLICT(content_id) DO UPDATE SET language=excluded.language, details=excluded.details
+                       WHERE store_about.language != 'ru' OR excluded.language = 'ru'""",
+                    (content_id, details["language"], json.dumps(details, ensure_ascii=False)),
+                )
+        return details
 
     @app.post("/api/games", status_code=201)
     def add_game(item: catalog.GameInput):

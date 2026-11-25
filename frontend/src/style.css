@@ -238,6 +238,7 @@ kbd { color: #aba8a4; flex-shrink: 0; background: #292a2c; border: 1px solid #42
 .back-link { margin-bottom: 19px; }
 .detail-hero { min-height: 293px; }
 .detail-title { display: flex; align-items: end; gap: 28px; padding: 33px clamp(18px, 3vw, 42px); }
+.detail-title > :last-child { min-width: 0; }
 .detail-title .cover { flex: 0 0 clamp(86px, 12vw, 152px); border: 1px solid #ffe5ba3b; box-shadow: 0 9px 25px #050405a0; }
 .detail-title h1 { font-size: clamp(28px, 4.3vw, 57px); margin: 10px 0; text-wrap: wrap; }
 .detail-title p { color: #e0d7cc; font-size: 14px; }
@@ -246,17 +247,12 @@ kbd { color: #aba8a4; flex-shrink: 0; background: #292a2c; border: 1px solid #42
 .detail-pills > .mono { color: #d5c7b7; }
 .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-top: 19px; }
 .panel { min-width: 0; padding: 20px; background: var(--surface); border: 1px solid var(--line); border-radius: 11px; }
-.panel.about-game { margin-top: 17px; padding: 0; }
-.about-game > summary { display: flex; align-items: center; justify-content: space-between; gap: 12px;
-  padding: 14px 20px; list-style: none; cursor: pointer; font-size: 16px; font-weight: 810; }
-.about-game > summary::-webkit-details-marker { display: none; }
-.about-game > summary svg { flex: none; color: var(--accent); }
-.about-game[open] > summary svg { transform: rotate(180deg); }
-.about-game-body { padding: 15px 20px 20px; border-top: 1px solid var(--line); font-size: 14px; }
-.about-game-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
-.about-game-meta:not(:empty) { margin-bottom: 12px; }
-.about-game-meta span { padding: 3px 8px; border: 1px solid #71583b; border-radius: 5px; background: #2d251c; color: #f1d7b6; font-size: 12px; }
-.about-game-meta strong { margin-left: 3px; color: #e0cfc0; font-size: 12px; }
+.detail-store-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; color: #e0cfc0; font-size: 12px; }
+.detail-store-meta:not(:empty) { margin-top: 10px; }
+.detail-store-meta strong { color: #f3e7d8; }
+.store-genre { padding: 3px 8px; border: 1px solid #71583b; border-radius: 5px; background: #2d251c; color: #f1d7b6; }
+.about-game-body { font-size: 14px; }
+.about-game-body .about-game-language { margin: 0 0 10px; }
 .about-game-description { max-width: 82ch; color: #e4dcd2; white-space: pre-line; overflow-wrap: anywhere; line-height: 1.6; }
 .panel h2 { font-size: 18px; line-height: 1.25; letter-spacing: -.035em; font-weight: 810; margin-bottom: 15px; }
 .panel > .section-heading { margin-bottom: 13px; }

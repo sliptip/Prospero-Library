@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ChangeEvent, FormEvent, ReactNode } from 'react'
-import { ArrowLeft, Box, ChevronDown, Download, ExternalLink, ImagePlus, Pencil, Plus, RefreshCw, Trash2, X } from 'lucide-react'
+import { ArrowLeft, Box, Download, ExternalLink, ImagePlus, Info, Pencil, Plus, RefreshCw, Trash2, X } from 'lucide-react'
 import { Cover } from './Library'
 import { api, compatiblePatchText, dateText, dlcLabel, fileLabel, json, localText, patchArchive, patchFirmwareText, patchLabel, sizeText, unknown } from './model'
 import type { ArtCandidate, Dlc, Game, GameAbout, PatchInfo, Platform } from './model'
@@ -123,39 +123,27 @@ export function CompatiblePatch({ patch }: { patch: PatchInfo }) {
   return text && <Meta name={'Совместимый патч · ' + patch.target} className="mono">{text}</Meta>
 }
 
-type AboutState = { status: 'idle' | 'loading' } | { status: 'ready'; game: GameAbout | null } | { status: 'error'; message: string }
+type AboutState = { status: 'loading' } | { status: 'ready'; game: GameAbout | null } | { status: 'error'; message: string }
 
-function AboutGame({ id }: { id: number }) {
-  const [about, setAbout] = useState<AboutState>({ status: 'idle' })
-
-  async function load() {
-    setAbout({ status: 'loading' })
-    try { setAbout({ status: 'ready', game: await api<GameAbout | null>(`/games/${id}/about`) }) }
-    catch (error) { setAbout({ status: 'error', message: String((error as Error).message) }) }
-  }
-
-  return <details className="panel about-game" onToggle={event => {
-    if (event.currentTarget.open && about.status === 'idle') void load()
-  }}>
-    <summary>Об игре <ChevronDown aria-hidden="true" size={18} /></summary>
-    <div className="about-game-body">
+function AboutGameDialog({ about, close, retry }: { about: AboutState; close: () => void; retry: () => void }) {
+  return <Dialog title="Об игре" close={close} wide>
+    <div className="dialog-body about-game-body">
       {about.status === 'loading' && <p className="muted" role="status">Загружаю описание…</p>}
       {about.status === 'error' && <div className="section-heading">
         <p className="muted" role="status">{about.message}</p>
-        <button className="text-button" onClick={() => void load()}>Повторить</button>
+        <button className="text-button" onClick={retry}>Повторить</button>
       </div>}
-      {about.status === 'ready' && (about.game ? <>
-        <div className="about-game-meta" lang="en">
-          {about.game.genres.map(genre => <span key={genre}>{genre}</span>)}
-          {about.game.publisher && <strong>{about.game.publisher}</strong>}
-        </div>
-        <p className="about-game-description" lang="en">{about.game.description}</p>
-        <a href={about.game.url} target="_blank" rel="noreferrer" className="text-button note">
+      {about.status === 'ready' && <>
+        {about.game?.description ? <>
+          {about.game.language === 'en' && <p className="muted about-game-language">Описание на английском</p>}
+          <p className="about-game-description" lang={about.game.language}>{about.game.description}</p>
+        </> : <p className="muted">В PlayStation Store нет описания для этой игры.</p>}
+        {about.game?.url?.startsWith('https://store.playstation.com/') && <a href={about.game.url} target="_blank" rel="noreferrer" className="text-button note">
           PlayStation Store <ExternalLink size={13} />
-        </a>
-      </> : <p className="muted">В PlayStation Store нет описания для этой игры.</p>)}
+        </a>}
+      </>}
     </div>
-  </details>
+  </Dialog>
 }
 
 export function GamePage({ game, back, edit, art, updates, updating, removed }: {
@@ -164,6 +152,26 @@ export function GamePage({ game, back, edit, art, updates, updating, removed }: 
   const [remove, setRemove] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [showAbout, setShowAbout] = useState(false)
+  const [about, setAbout] = useState<AboutState>({ status: 'loading' })
+  const [aboutAttempt, setAboutAttempt] = useState(0)
+  const store = about.status === 'ready' ? about.game : null
+  const release = game.release_date || store?.release_date
+
+  useEffect(() => {
+    if (!game.content_id) {
+      setAbout({ status: 'ready', game: null })
+      return
+    }
+    const request = new AbortController()
+    setAbout({ status: 'loading' })
+    void api<GameAbout | null>(`/games/${game.id}/about`, { signal: request.signal }).then(data => {
+      if (!request.signal.aborted) setAbout({ status: 'ready', game: data })
+    }).catch(error => {
+      if (!request.signal.aborted) setAbout({ status: 'error', message: String((error as Error).message) })
+    })
+    return () => request.abort()
+  }, [game.id, game.content_id, aboutAttempt])
 
   async function removeGame() {
     setBusy(true)
@@ -189,14 +197,23 @@ export function GamePage({ game, back, edit, art, updates, updating, removed }: 
           <div className="detail-pills"><span className="platform">{game.platform}</span><span className="mono">{game.title_id}</span></div>
           <h1>{game.title}</h1>
           {game.edition && <p>{game.edition}</p>}
+          <div className="detail-store-meta">
+            {store?.genres.map(genre => <span className="store-genre" key={genre}>{genre}</span>)}
+            {store?.publisher && <span>Издатель · <strong>{store.publisher}</strong></span>}
+            {release && <span>Выход · <strong>{dateText(release)}</strong></span>}
+            {store?.players && <span>Игроки · <strong>{store.players}</strong></span>}
+          </div>
           <div className="detail-actions">
             <button className="button primary" onClick={edit}><Pencil size={16} /> Редактировать</button>
             <button className="button secondary" onClick={art}><ImagePlus size={17} /> Оформление</button>
+            {game.content_id && <button className="button secondary" aria-haspopup="dialog" onClick={() => setShowAbout(true)}>
+              <Info size={17} /> Об игре
+            </button>}
           </div>
         </div>
       </div>
     </section>
-    {game.content_id && <AboutGame key={game.content_id} id={game.id} />}
+    {showAbout && <AboutGameDialog about={about} close={() => setShowAbout(false)} retry={() => setAboutAttempt(value => value + 1)} />}
     <div className="detail-grid">
       <section className="panel">
         <h2>Игра в коллекции</h2>
@@ -204,7 +221,6 @@ export function GamePage({ game, back, edit, art, updates, updating, removed }: 
           <Meta name="Версия" className="mono">{game.version}</Meta>
           <Meta name="Требуемая прошивка" className="mono">{game.firmware}</Meta>
           <Meta name="Размер">{game.size_bytes != null ? sizeText(game.size_bytes) : unknown}</Meta>
-          <Meta name="Дата выхода">{dateText(game.release_date)}</Meta>
           <Meta name="На диске">{fileLabel[game.file_state]}</Meta>
           <Meta name="Добавлена">{dateText(game.added_at)}</Meta>
         </dl>
