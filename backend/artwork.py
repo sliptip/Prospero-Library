@@ -321,39 +321,85 @@ def playstation_dlc_candidates(props, content_id):
 
 def playstation_dlc(client, content_id):
     failure = None
-    found = False
+    source = None
+    candidates = []
     for locale in playstation_locales(content_id):
         url = playstation_url(content_id, locale)
         try:
             props = playstation_props(bounded_get(client, url, 3_000_000), content_id)
             if props:
-                found = True
+                source = props, locale
                 candidates = playstation_dlc_candidates(props, content_id)
                 if candidates:
-                    return candidates
+                    break
         except httpx.HTTPStatusError as error:
             if not (error.response.is_redirect or error.response.status_code in (404, 410)):
                 failure = error
         except (httpx.HTTPError, KeyError, TypeError, ValueError, AttributeError) as error:
             failure = error
-    if not found and failure:
-        raise failure
+    if source is None:
+        if failure:
+            raise failure
+        return []
+    props, locale = source
+    items = {(item["kind"], item["id"]): item for item in candidates}
+    for item in related_store_dlc(client, props, content_id, locale):
+        items.setdefault((item["kind"], item["id"]), item)
+    return list(items.values())
+
+
+def product_concept(props, content_id):
+    concept = playstation_slot(props, "game-title", content_id).get("concept") or {}
+    ref = concept.get("__ref", "")
+    return ref if re.fullmatch(r"Concept:[0-9]{1,12}", ref) else None
+
+
+def concept_default_product(props, ref):
+    if str(props.get("conceptId")) != ref.split(":", 1)[1]:
+        return None
+    for slot in ("info", "game-title"):
+        entry = playstation_cache(props, slot).get(ref, {})
+        product_ref = (entry.get("defaultProduct") or {}).get("__ref", "")
+        if product_ref.startswith("Product:"):
+            return product_ref.removeprefix("Product:")
+    return None
+
+
+def related_store_dlc(client, props, content_id, source_locale):
+    ref = product_concept(props, content_id)
+    if not ref:
+        return []
+    concept_id = ref.split(":", 1)[1]
+    for locale in playstation_locales(content_id):
+        if locale == source_locale:
+            continue
+        try:
+            url = f"https://store.playstation.com/{locale}/concept/{concept_id}"
+            concept = playstation_props(bounded_get(client, url, 3_000_000))
+            related_id = concept_default_product(concept, ref)
+            if not playstation_url(related_id) or related_id[:11] != content_id[:11]:
+                continue
+            url = playstation_url(related_id, locale)
+            related = playstation_props(bounded_get(client, url, 3_000_000), related_id)
+            if product_concept(related, related_id) != ref:
+                continue
+            candidates = [item for item in playstation_dlc_candidates(related, related_id)
+                          if item["kind"] == "dlc" and item["id"][:6] == content_id[:6]]
+            if candidates:
+                return candidates
+        except (httpx.HTTPError, KeyError, TypeError, ValueError, AttributeError):
+            continue
     return []
 
 
 def russian_concept(client, product_props, content_id):
-    concept = playstation_slot(product_props, "game-title", content_id).get("concept") or {}
-    ref = concept.get("__ref", "")
-    if not re.fullmatch(r"Concept:[0-9]{1,12}", ref):
+    ref = product_concept(product_props, content_id)
+    if not ref:
         return None
     concept_id = ref.split(":", 1)[1]
     url = f"https://store.playstation.com/ru-ua/concept/{concept_id}"
     props = playstation_props(bounded_get(client, url, 3_000_000))
-    if str(props.get("conceptId")) != concept_id:
-        return None
-    entry = playstation_cache(props, "info").get(ref, {})
-    default = (entry.get("defaultProduct") or {}).get("__ref", "")
-    localized_id = default.removeprefix("Product:")
+    localized_id = concept_default_product(props, ref)
     if not playstation_url(localized_id) or localized_id[7:11] != content_id[7:11]:
         return None
     result = playstation_details(props, localized_id, "ru-ua")

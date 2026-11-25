@@ -340,6 +340,46 @@ class LocalCatalogTest(unittest.TestCase):
             self.assertTrue(reopened.get("/api/settings").json()["hide_recent"])
         self.assertFalse(self.client.patch("/api/settings/library", json={"hide_recent": False}).json()["hide_recent"])
 
+    def test_store_dlc_merges_same_concept_regional_lists(self):
+        base = "EP4321-PPSA12345_00-BASE000000000001"
+        related = "EP4321-PPSA12346_00-BASE000000000001"
+        concept = "Concept:12345"
+        existing = "EP4321-PPSA12346_00-EXPANSION0000001"
+        additional = "EP4321-PPSA12346_00-EXPANSION0000002"
+        other_publisher = "EP9876-PPSA12346_00-EXPANSION0000002"
+
+        def page(locale, ids, **slots):
+            batarangs = {slot: {"text": f"<script>{json.dumps({'cache': cache})}</script>"} for slot, cache in slots.items()}
+            props = {"locale": locale, **ids, "batarangs": batarangs}
+            payload = json.dumps({"props": {"pageProps": props}}).replace("<", r"\u003c")
+            return f'<script id="__NEXT_DATA__">{payload}</script>'.encode()
+
+        def product_page(content_id, locale, names, concept_ref=concept):
+            items = {f"Product:{key}": {"id": key, "name": value, "platforms": ["PS5"]} for key, value in names.items()}
+            query = f'addOnProductsByProductIdRetrieve({{"productId":"{content_id}"}})'
+            addons = {**items, "ROOT_QUERY": {query: {"addOnProducts": [{"__ref": key} for key in items]}}}
+            title = {f"Product:{content_id}": {"id": content_id, "concept": {"__ref": concept_ref}}}
+            return page(locale, {"productId": content_id}, **{"add-ons": addons, "game-title": title})
+
+        main_path = f"/ru-ua/product/{base}"
+        regional_path = f"/en-gb/product/{related}"
+        pages = {
+            main_path: product_page(base, "ru-ua", {existing: "Первое DLC"}),
+            "/en-gb/concept/12345": page("en-gb", {"conceptId": "12345"},
+                                        info={concept: {"defaultProduct": {"__ref": f"Product:{related}"}}}),
+            regional_path: product_page(related, "en-gb", {
+                additional: "Second expansion", existing: "First expansion", other_publisher: "Unrelated",
+            }),
+        }
+        transport = httpx.MockTransport(lambda req: httpx.Response(
+            200, content=pages[req.url.path]) if req.url.path in pages else httpx.Response(404))
+        with httpx.Client(transport=transport) as client:
+            first = artwork.playstation_dlc(client, base)
+            self.assertEqual([(item["id"], item["name"], item["locale"]) for item in first],
+                             [(existing, "Первое DLC", "ru-ua"), (additional, "Second expansion", "en-gb")])
+            pages[regional_path] = product_page(related, "en-gb", {additional: "Wrong game"}, "Concept:90000")
+            self.assertEqual([item["id"] for item in artwork.playstation_dlc(client, base)], [existing])
+
     def test_custom_localization_groups_survive_unrelated_edits_and_backup(self):
         groups = [{"source": "Команда перевода", "interface": None, "subtitles": "Русский", "audio": None},
                   {"source": None, "interface": None, "subtitles": None, "audio": "Русский, Украинский"}]
