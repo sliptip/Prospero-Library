@@ -15,11 +15,14 @@ const navigation = [
   { route: '/settings', label: 'Настройки', icon: Settings2 },
 ]
 
+type AppHealth = { version: string; app_update: boolean }
+
 export function App() {
   const [route, setRoute] = useState(window.location.pathname)
   const [games, setGames] = useState<Game[]>([])
   const [ready, setReady] = useState(false)
-  const [version, setVersion] = useState('')
+  const [health, setHealth] = useState<AppHealth | null>(null)
+  const [appUpdate, setAppUpdate] = useState<'checking' | 'restarting' | null>(null)
   const [hideRecent, setHideRecent] = useState(false)
   const [query, setQuery] = useState('')
   const [job, setJob] = useState<Job | null>(null)
@@ -64,7 +67,7 @@ export function App() {
     window.addEventListener('popstate', back)
     window.addEventListener('keydown', key)
     void refresh().catch(showError)
-    void api<{ version: string }>('/health').then(result => setVersion(result.version)).catch(() => {})
+    void api<AppHealth>('/health').then(setHealth).catch(() => {})
     void api<Job | null>('/jobs/latest').then(setJob).catch(() => {})
     return () => {
       window.removeEventListener('popstate', back)
@@ -114,6 +117,34 @@ export function App() {
   const current = detail ? games.find(game => game.id === Number(detail[1])) : undefined
   const home = route === '/'
   const updating = active(job) || starting
+  async function checkAppUpdate() {
+    setError('')
+    setNotice('')
+    setAppUpdate('checking')
+    try {
+      const result = await api<{ version: string; restart: boolean }>('/app-update', { method: 'POST' })
+      if (!result.restart) {
+        setNotice('Установлена последняя версия Prospero')
+        return
+      }
+      setAppUpdate('restarting')
+      const deadline = Date.now() + 140_000
+      while (Date.now() < deadline) {
+        await new Promise(resolve => window.setTimeout(resolve, 900))
+        const running = await api<AppHealth>('/health', { signal: AbortSignal.timeout(2500) }).catch(() => null)
+        if (running?.version === result.version) {
+          window.location.reload()
+          return
+        }
+      }
+      setError('Не удалось подтвердить запуск Prospero ' + result.version)
+    } catch (failure) {
+      showError(failure)
+    } finally {
+      setAppUpdate(null)
+    }
+  }
+
   const showGame = (id: number) => navigate('/games/' + id)
   async function swapGames(source: number, target: number) {
     setError('')
@@ -152,7 +183,12 @@ export function App() {
           </a>
         })}
       </nav>
-      {version && <span className="sidebar-version" title={'Версия приложения ' + version}>v{version}</span>}
+      {health && <div className="sidebar-version">
+        <span title={'Версия приложения ' + health.version}>v{health.version}</span>
+        {health.app_update && <button type="button" className="icon-button app-update-button" disabled={!!appUpdate || updating}
+          aria-label="Проверить обновление Prospero" title="Проверить обновление Prospero"
+          onClick={() => void checkAppUpdate()}><RefreshCw size={15} /></button>}
+      </div>}
     </aside>
     <div className="app-main">
       <header className="topbar">
@@ -188,7 +224,9 @@ export function App() {
           openJournal={() => setJournalOpen(true)} />}
       </main>
     </div>
-    {notice && <div className="toast" role="status">{notice}</div>}
+    {(appUpdate || notice) && <div className="toast" role="status">
+      {appUpdate === 'checking' ? 'Проверяю обновление Prospero…' : appUpdate === 'restarting' ? 'Перезапускаю Prospero…' : notice}
+    </div>}
     {mode === 'new' && <GameEditor close={() => setMode(null)} save={saveGame} />}
     {mode === 'edit' && current && <GameEditor game={current} close={() => setMode(null)} save={saveGame} />}
     {mode === 'art' && current && <ArtworkDialog game={current} close={() => setMode(null)} save={saveGame} />}

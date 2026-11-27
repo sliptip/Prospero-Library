@@ -70,7 +70,7 @@ a { text-decoration: none; }
 .navigation a:hover { color: var(--text); background: #262525; }
 .navigation a[aria-current] { background: #282520; border-color: #3b3327; color: var(--accent); }
 .nav-chevron { margin-left: auto; opacity: .77; }
-.sidebar-version { margin-top: auto; padding: 0 9px; color: var(--muted); font: 11px var(--mono); }
+.sidebar-version { margin-top: auto; padding: 0 9px; color: var(--muted); font: 11px var(--mono); display: flex; align-items: center; gap: 5px; }
 
 .topbar {
   height: 79px; padding: 0 clamp(22px, 3.5vw, 55px);
@@ -108,6 +108,7 @@ kbd { color: #aba8a4; flex-shrink: 0; background: #292a2c; border: 1px solid #42
   color: #bbb7b1; border-radius: 6px; text-decoration: none;
 }
 .icon-button:hover:not(:disabled) { background: #ffffff0d; color: var(--text); }
+.app-update-button { width: 27px; height: 27px; }
 .job-button.working { color: var(--accent); }
 .text-button { font-size: 13px; font-weight: 760; color: var(--accent); display: inline-flex; align-items: center; gap: 7px; }
 .text-button:hover { color: #ffe1b4; }
@@ -388,6 +389,7 @@ kbd { color: #aba8a4; flex-shrink: 0; background: #292a2c; border: 1px solid #42
   .navigation { width: 100%; margin-top: 28px; }
   .navigation a { justify-content: center; padding: 0; }
   .sidebar-version { padding: 0; font-size: 9px; }
+  .app-update-button { width: 22px; height: 24px; }
   .topbar { height: 70px; }
   .detail-title { gap: 17px; }
   .detail-grid { gap: 10px; }

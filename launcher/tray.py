@@ -8,6 +8,7 @@ import sys
 import time
 import webbrowser
 from ctypes import wintypes
+from pathlib import Path
 from threading import Thread
 from urllib.error import URLError
 from urllib.request import ProxyHandler, Request, build_opener
@@ -17,6 +18,7 @@ from dotenv import load_dotenv
 from PIL import Image, ImageDraw
 
 from backend.database import APP_DIRECTORY, app_data_directory
+from launcher.app_update import TrayUpdater, apply_update, clean_finished_updates
 
 TITLE = "Prospero Library"
 REG_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -43,16 +45,19 @@ def notify_error(message):
     ctypes.windll.user32.MessageBoxW(None, str(message), TITLE, 0x10)
 
 
-def wait_health(base, thread=None):
-    deadline = time.monotonic() + 10
+def wait_health(base, thread=None, *, process=None, version=None, timeout=10):
+    deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if thread is not None and not thread.is_alive():
+        if (thread is not None and not thread.is_alive()) or (process is not None and process.poll() is not None):
             return False
         try:
             with LOCAL_HTTP.open(base + "/api/health", timeout=.5) as response:
-                return json.load(response).get("app") == "prospero-library"
+                health = json.load(response)
+                if health.get("app") == "prospero-library" and (version is None or health.get("version") == version):
+                    return True
         except (OSError, ValueError):
-            time.sleep(.17)
+            pass
+        time.sleep(.17)
     return False
 
 
@@ -94,7 +99,7 @@ def mutex():
     return handle, error == 183, close
 
 
-def tray_menu(pystray, server, base, directory):
+def tray_menu(pystray, shutdown, base, directory):
     def open_page(path=""):
         return lambda *_: webbrowser.open(base + path)
 
@@ -117,20 +122,16 @@ def tray_menu(pystray, server, base, directory):
             Thread(target=request, daemon=True).start()
         return launch
 
-    def quit_tray(icon, _):
-        server.should_exit = True
-        icon.stop()
-
     item = pystray.MenuItem
     return pystray.Menu(
         item("Открыть библиотеку", open_page(), default=True),
         item("Сканировать коллекцию", start_job("scan", b'{"force":false}')),
-        item("Проверить обновления", start_job("updates")),
+        item("Проверить обновления игр", start_job("updates")),
         item("Настройки", open_page("/settings")),
         item("Журнал работы", open_logs),
         item("Запускать вместе с Windows", toggle_start, checked=lambda _: autostart(),
              enabled=getattr(sys, "frozen", False)),
-        item("Выход", quit_tray),
+        item("Выход", lambda *_: shutdown()),
     )
 
 
@@ -151,6 +152,15 @@ def run_tray():
             return
 
         from backend.main import create_app
+        if getattr(sys, "frozen", False):
+            clean_finished_updates(APP_DIRECTORY)
+
+        def shutdown():
+            server.should_exit = True
+            icon.stop()
+
+        updater = TrayUpdater(Path(sys.executable).resolve(), directory / "library.db", port, shutdown) \
+            if getattr(sys, "frozen", False) else None
         # Pass the same listening socket to Uvicorn so the port stays reserved.
         with socket.socket() as listener:
             listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
@@ -159,9 +169,10 @@ def run_tray():
                 listener.listen(64)
             except OSError as error:
                 raise RuntimeError(f"Порт {port} занят. Измените PROSPERO_PORT в .env.") from error
-            app = create_app(directory)
+            app = create_app(directory, app_updater=updater)
             server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port,
                                 log_config=None, access_log=False, proxy_headers=False, timeout_graceful_shutdown=15))
+            icon = pystray.Icon("prospero-library", tray_icon(), TITLE, tray_menu(pystray, shutdown, base, directory))
             runner = Thread(target=server.run, kwargs={"sockets": [listener]}, name="prospero-http", daemon=True)
             runner.start()
             try:
@@ -169,7 +180,7 @@ def run_tray():
                     raise RuntimeError("Локальный сервер не запустился. Проверьте каталог данных и журнал.")
                 if "--background" not in sys.argv:
                     webbrowser.open(base)
-                pystray.Icon("prospero-library", tray_icon(), TITLE, tray_menu(pystray, server, base, directory)).run()
+                icon.run()
             finally:
                 server.should_exit = True
                 runner.join(timeout=65)
@@ -181,7 +192,10 @@ if __name__ == "__main__":
     if os.name != "nt":
         raise SystemExit("Запускатор трея предназначен для Windows")
     try:
-        run_tray()
+        if len(sys.argv) == 7 and sys.argv[1] == "--apply-update" and getattr(sys, "frozen", False):
+            apply_update(*sys.argv[2:], wait_health)
+        else:
+            run_tray()
     except Exception as error:
         notify_error(error)
         raise SystemExit(1)

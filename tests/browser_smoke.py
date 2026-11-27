@@ -81,6 +81,29 @@ def run(screenshots, browser_executable):
             expect(page.locator(".collection-patch-status")).to_have_count(0)
             capture(page, screenshots, "Prospero-Library.png")
 
+            running_version = page.locator(".sidebar-version span").inner_text().removeprefix("v")
+            mocked_health = {"version": running_version, "app_update": True}
+            page.route("**/api/health", lambda route: route.fulfill(json=mocked_health))
+            page.reload(wait_until="networkidle")
+            update = page.locator(".sidebar-version").get_by_role("button", name="Проверить обновление Prospero")
+            page.route("**/api/app-update", lambda route:
+                       route.fulfill(json={"version": running_version, "restart": False}))
+            update.click()
+            expect(page.get_by_text("Установлена последняя версия Prospero")).to_be_visible()
+
+            def restart_app(route):
+                mocked_health["version"] = "99.1.2"
+                route.fulfill(json={"version": "99.1.2", "restart": True})
+
+            page.unroute("**/api/app-update")
+            page.route("**/api/app-update", restart_app)
+            with page.expect_event("framenavigated"):
+                update.click()
+            expect(page.locator(".sidebar-version span")).to_have_text("v99.1.2")
+            page.unroute("**/api/app-update")
+            page.unroute("**/api/health")
+            page.reload(wait_until="networkidle")
+
             page.get_by_role("link", name="Настройки").click()
             key = page.get_by_label("Ключ SteamGridDB")
             key.fill("local-fixture-key")

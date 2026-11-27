@@ -1,4 +1,5 @@
 .venv/
+.prospero-update-*/
 __pycache__/
 node_modules/
 dist/

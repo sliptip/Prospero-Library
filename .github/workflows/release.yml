@@ -6,16 +6,19 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-main
   cancel-in-progress: false
 
 jobs:
-  release:
+  source:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      publish: ${{ steps.release.outputs.publish }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -53,12 +56,113 @@ jobs:
           python -m pip install -r requirements.txt
           python -m unittest discover -s tests -v
           python scripts/package_release.py
-      - name: Publish GitHub release
+      - uses: actions/upload-artifact@v7
         if: steps.release.outputs.publish == 'true'
+        with:
+          name: source
+          path: release/
+          if-no-files-found: error
+
+  windows:
+    needs: source
+    if: needs.source.outputs.publish == 'true'
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build Windows tray application
+        shell: pwsh
+        run: ./scripts/build-windows.ps1
+      - name: Verify the packaged app
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.source.outputs.version }}
+        run: |
+          $testRoot = Join-Path $env:RUNNER_TEMP "Prospero Smoke"
+          New-Item -ItemType Directory -Path $testRoot | Out-Null
+          $env:PROSPERO_DATA = Join-Path $testRoot "data"
+          $env:PROSPERO_PORT = '18437'
+          $env:PROSPERO_EMPTY_LIBRARY = '1'
+          $target = Join-Path $testRoot "ProsperoTraySmoke.exe"
+          Copy-Item './dist/Prospero Library.exe' $target
+          $process = Start-Process -FilePath $target -ArgumentList '--background' -PassThru
+          $helper = $null
+          try {
+            $deadline = (Get-Date).AddSeconds(40)
+            $health = $null
+            while ((Get-Date) -lt $deadline -and -not $process.HasExited) {
+              try {
+                $health = Invoke-RestMethod -Uri 'http://127.0.0.1:18437/api/health' -TimeoutSec 2
+                break
+              } catch {
+                Start-Sleep -Milliseconds 500
+              }
+            }
+            if ($health.version -ne $env:VERSION -or -not $health.app_update) {
+              throw 'The packaged Windows app did not start with its updater enabled.'
+            }
+            $staged = Join-Path $testRoot ".prospero-update-smoke"
+            New-Item -ItemType Directory -Path $staged | Out-Null
+            Copy-Item $target (Join-Path $staged "pending.exe")
+            $helperPath = Join-Path $staged "helper.exe"
+            Copy-Item $target $helperPath
+            $db = Join-Path $env:PROSPERO_DATA "library.db"
+            $arguments = @('--apply-update', $process.Id, $env:PROSPERO_PORT, $env:VERSION, "`"$target`"", "`"$db`"")
+            $helper = Start-Process -FilePath $helperPath -ArgumentList $arguments -PassThru
+            taskkill.exe /PID $process.Id /T /F | Out-Null
+            if (-not $helper.WaitForExit(65000) -or $helper.ExitCode -ne 0 -or
+                -not (Test-Path (Join-Path $staged "finished"))) {
+              throw 'The Windows app updater did not replace and restart the packaged EXE.'
+            }
+            $health = Invoke-RestMethod -Uri 'http://127.0.0.1:18437/api/health' -TimeoutSec 3
+            if ($health.version -ne $env:VERSION -or -not $health.app_update) {
+              throw 'Prospero did not respond after the update.'
+            }
+          } finally {
+            if ($helper -and -not $helper.HasExited) {
+              taskkill.exe /PID $helper.Id /T /F | Out-Null
+            }
+            Get-Process -Name "ProsperoTraySmoke" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          }
+          $name = "Prospero-Library-${env:VERSION}-Windows-x64.exe"
+          Copy-Item './dist/Prospero Library.exe' "./dist/$name"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows
+          path: dist/Prospero-Library-*-Windows-x64.exe
+          if-no-files-found: error
+
+  publish:
+    needs: [source, windows]
+    if: needs.source.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: source
+          path: release
+      - uses: actions/download-artifact@v8
+        with:
+          name: windows
+          path: release
+      - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.release.outputs.version }}
+          VERSION: ${{ needs.source.outputs.version }}
         run: |
           gh release create "v$VERSION" "release/Prospero-Library-$VERSION.zip" \
+            "release/Prospero-Library-$VERSION-Windows-x64.exe" \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "Prospero Library $VERSION" --notes-file release/release-notes.md

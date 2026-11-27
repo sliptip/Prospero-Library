@@ -34,7 +34,10 @@ def main():
 
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     section = re.search(rf"^## {re.escape(version)}(?:[ \t]+[^\n]*)?\n(.*?)(?=^## |\Z)", changelog, re.M | re.S)
-    notes = "Скачай ZIP из Assets, распакуй и запусти `Start.cmd`. Для запуска нужен Python 3.12 или новее.\n"
+    notes = (
+        "Для Windows x64 скачай EXE из Assets и запусти его. "
+        "EXE должен лежать рядом с прежней папкой `data`, если Prospero уже установлена.\n"
+    )
     if section and section[1].strip():
         notes += "\n" + section[1].strip() + "\n"
     (output / "release-notes.md").write_text(notes, encoding="utf-8")

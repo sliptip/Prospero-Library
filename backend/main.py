@@ -3,11 +3,13 @@ import logging
 import os
 import re
 import secrets
+import shutil
 import sqlite3
 import time
 from contextlib import asynccontextmanager
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from threading import Lock
 from typing import Literal
 from zipfile import BadZipFile
 
@@ -17,9 +19,11 @@ from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import __version__, catalog, patches, scanner
+from .app_updates import UpdateError
 from .artwork import (ARTWORK_KEYS, ART_NAME, IMAGE_HOSTS, MAX_IMAGE, PS_STORE_SOURCE, STORE_PRODUCT_SETTING, Artwork,
                       link_local_dlc, playstation_about, playstation_dlc, playstation_dlc_description, playstation_url,
                       store_image, store_platform)
@@ -69,12 +73,13 @@ class GameSwap(BaseModel):
     target_id: int = Field(gt=0)
 
 
-def create_app(data_directory=None, frontend_directory=None):
+def create_app(data_directory=None, frontend_directory=None, app_updater=None):
     load_dotenv(APP_DIRECTORY / ".env")
     database = Database(data_directory if data_directory is not None else app_data_directory())
     jobs = Jobs(database)
     artwork = Artwork(database=database)
     candidates = {}
+    update_lock = Lock()
     log_path = database.directory / "logs" / "prospero.log"
     front = Path(frontend_directory or os.getenv("PROSPERO_FRONTEND") or BASE / "frontend" / "dist")
     extra_hosts = os.getenv("PROSPERO_ALLOWED_HOSTS", "").split(",")
@@ -147,9 +152,44 @@ def create_app(data_directory=None, frontend_directory=None):
             raise HTTPException(404, "Игра не найдена")
         return games[0]
 
+    def can_update(request):
+        return app_updater is not None and request.client is not None and request.client.host in loopback
+
     @app.get("/api/health")
-    def health():
-        return {"app": "prospero-library", "version": app.version}
+    def health(request: Request):
+        return {"app": "prospero-library", "version": app.version, "app_update": can_update(request)}
+
+    @app.post("/api/app-update")
+    def app_update(request: Request):
+        if not can_update(request):
+            raise HTTPException(403, "Обновление приложения доступно при локальном запуске из трея.")
+        if not update_lock.acquire(blocking=False):
+            raise HTTPException(409, "Обновление Prospero уже проверяется.")
+        prepared = None
+        try:
+            with jobs.lock:
+                if jobs.active or jobs.closed:
+                    raise HTTPException(409, "Дождись завершения текущей операции.")
+            prepared = app_updater.prepare(app.version)
+            if prepared is None:
+                return {"version": app.version, "restart": False}
+            with jobs.lock:
+                if jobs.active or jobs.closed:
+                    raise HTTPException(409, "Дождись завершения текущей операции.")
+                app_updater.launch(prepared)
+                jobs.closed = True
+            version, _ = prepared
+            prepared = None
+            return JSONResponse({"version": version, "restart": True}, background=BackgroundTask(app_updater.shutdown))
+        except UpdateError as error:
+            raise HTTPException(502, str(error)) from error
+        except (httpx.HTTPError, ValueError, TypeError, AttributeError, OSError) as error:
+            logger.warning("Не удалось загрузить или подготовить обновление Prospero: %s", type(error).__name__)
+            raise HTTPException(502, "Не удалось загрузить или подготовить обновление Prospero.") from error
+        finally:
+            if prepared is not None:
+                shutil.rmtree(prepared[1], ignore_errors=True)
+            update_lock.release()
 
     @app.get("/api/logs")
     def diagnostic_log(download: bool = False):

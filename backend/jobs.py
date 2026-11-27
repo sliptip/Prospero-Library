@@ -32,7 +32,7 @@ class Jobs:
 
     def start(self, kind, worker, **options):
         with self.lock:
-            if self.active is not None:
+            if self.closed or self.active is not None:
                 raise RuntimeError("Дождитесь завершения текущей операции")
             self.stop.clear()
             report = {"found": 0, "added": 0, "updated": 0, "skipped": 0, "errors": 0, "issues": []}
