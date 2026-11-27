@@ -173,6 +173,7 @@ def run(screenshots, browser_executable):
             expect(page.get_by_role("heading", name="Игра в коллекции")).to_be_visible()
             expect(page.get_by_text("01.000.000", exact=True)).to_be_visible()
             expect(page.get_by_text("Preorder Alucard Skin DLC", exact=True)).to_be_visible()
+            expect(page.get_by_text("В образе", exact=True)).to_have_count(2)
             expect(page.get_by_text("Совместимый патч", exact=False)).to_have_count(0)
             expect(page.get_by_text("Официальная", exact=True)).to_be_visible()
             expect(page.get_by_text("Английский, Японский", exact=True)).to_be_visible()
@@ -237,6 +238,9 @@ def run(screenshots, browser_executable):
             checkbox.check()
             page.get_by_role("textbox", name="Примечания").fill("Проверка сохранения в SQLite")
             editor = page.get_by_role("dialog", name="Редактировать карточку")
+            dlc_status = editor.get_by_role("combobox", name="Статус DLC")
+            expect(dlc_status.first.locator("option")).to_have_text(["В образе", "Не добавлено"])
+            expect(dlc_status.first).to_have_value("included")
             expect(editor.get_by_role("combobox", name="Русский текст").locator("option:checked")).to_have_text("Авто · Есть")
             expansion = "JP0101-PPSA35399_00-EXPANSION0000001"
             page.route("**/api/games/1/store-dlc", lambda route: route.fulfill(json=[
@@ -254,6 +258,7 @@ def run(screenshots, browser_executable):
             expect(editor.get_by_role("textbox", name="Название DLC").last).to_have_value("Бонусы Special Edition")
             choices.get_by_role("button", name="Добавить DLC из магазина").click()
             expect(editor.get_by_role("textbox", name="Название DLC").last).to_have_value("DLC из магазина")
+            expect(dlc_status.last).to_have_value("not_added")
             expect(editor.get_by_role("textbox", name="Описание", exact=True).last).to_have_value("Описание загружено из магазина")
             editor.get_by_role("button", name="Добавить локализацию").click()
             editor.get_by_role("button", name="Добавить локализацию").click()
@@ -384,7 +389,7 @@ def run(screenshots, browser_executable):
                 db.execute("INSERT INTO patch_history VALUES (?,'01.05','9.60','OrbisPatches',?,NULL)", (game_id, stamp))
                 package_id = "EP8254-CUSA20469_00-CUPHEADDLC000000"
                 db.execute("""INSERT INTO dlc (game_id,name,description,status,content_id)
-                              VALUES (?,'Delicious Last Course','Описание дополнения','configured',?)""",
+                              VALUES (?,'Delicious Last Course','Описание дополнения','included',?)""",
                            (game_id, package_id))
                 db.executemany(
                     """INSERT INTO ps4_extras (root_id,relpath,size_bytes,mtime,title_id,kind,title,content_id,available)

@@ -19,7 +19,7 @@ export function Dialog({ title, close, children, wide = false }: { title: string
   </dialog>
 }
 
-const blankDlc: Dlc = { name: '', description: null, content_id: null, status: 'unknown' }
+const blankDlc: Dlc = { name: '', description: null, content_id: null, status: 'not_added' }
 const blankLocalization: CustomLocalization = { source: null, interface: null, subtitles: null, audio: null }
 const customLanguageFields = [
   ['interface', 'Языки интерфейса'], ['subtitles', 'Языки субтитров'], ['audio', 'Языки озвучки'],
@@ -103,7 +103,7 @@ export function GameEditor({ game, close, save }: { game?: Game; close: () => vo
         content_id: row.content_id || item.content_id,
       } : row)
       if (refreshDescription || items.length >= 100) return items
-      return [...items, { name: storeDlcName(item), description, content_id: item.content_id, status: 'unknown' }]
+      return [...items, { ...blankDlc, name: storeDlcName(item), description, content_id: item.content_id }]
     })
     setAddingDlc(null)
   }
@@ -228,6 +228,7 @@ export function GameEditor({ game, close, save }: { game?: Game; close: () => vo
               onChange={event => setDlc(dlc.map((other, i) => i === index ? { ...other, name: event.target.value } : other))} /></label>
             <label className="field">Статус DLC<select value={item.status} onChange={event => setDlc(dlc.map((other, i) =>
               i === index ? { ...other, status: event.target.value as Dlc['status'] } : other))}>
+              {item.status === 'unknown' && <option value="unknown" disabled>Выбери статус</option>}
               {Object.entries(dlcLabel).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
             </select></label>
             <button className="icon-button" type="button" title="Удалить строку DLC" aria-label="Удалить строку DLC"
@@ -301,7 +302,7 @@ export function GamePage({ game, back, edit, art, updates, updating, removed, on
   const localPatches = game.local_packages.filter(item => item.kind === 'patch')
   const localDlc = game.local_packages.filter(item => item.kind === 'dlc')
   const listedDlc = game.dlc.map(item => ({
-    title: item.name, description: item.description, label: dlcLabel[item.status],
+    title: item.name, description: item.description, label: item.status === 'unknown' ? null : dlcLabel[item.status],
     files: localDlc.filter(file => file.content_id && file.content_id === item.content_id),
   }))
   const unlistedDlc = localDlc.filter(file => !file.content_id || !game.dlc.some(item => item.content_id === file.content_id))
@@ -419,7 +420,7 @@ export function GamePage({ game, back, edit, art, updates, updating, removed, on
           <div className="dlc-icon"><Box size={19} /></div>
           <div><strong>{item.title}</strong>{item.description && <p>{item.description}</p>}
             {item.files.map((file, index) => <PackageFile key={index} item={file} />)}</div>
-          <span className="status-pill">{item.label}</span>
+          {item.label && <span className="status-pill">{item.label}</span>}
         </div>)}</div>
       </section>}
       <section className="panel">

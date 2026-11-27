@@ -3,10 +3,10 @@ import re
 from datetime import date
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 from typing_extensions import Annotated
 
-from .database import now
+from .database import LEGACY_DLC_STATUSES, now
 from .seed import LEGACY_ART, PUBLISHER_METADATA
 
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=256)]
@@ -17,8 +17,13 @@ class DLC(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: Name
     description: str | None = None
-    status: Literal["configured", "verified", "unknown", "absent"] = "unknown"
+    status: Literal["included", "not_added", "unknown"] = "not_added"
     content_id: str | None = Field(default=None, max_length=80)
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def accept_legacy_status(cls, value):
+        return LEGACY_DLC_STATUSES.get(value, value) if isinstance(value, str) else value
 
 
 class CustomLocalization(BaseModel):

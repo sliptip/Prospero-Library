@@ -1,5 +1,5 @@
 export type Platform = 'PS4' | 'PS5'
-export type DlcStatus = 'configured' | 'verified' | 'unknown' | 'absent'
+export type DlcStatus = 'included' | 'not_added' | 'unknown'
 export type Dlc = { name: string; description: string | null; content_id: string | null; status: DlcStatus }
 export type StoreDlc = Omit<Dlc, 'status'> & { id: string; kind: 'dlc' | 'edition'; locale: string }
 export type LocalPackage = {
@@ -56,14 +56,14 @@ export function json(method: string, body: unknown): RequestInit {
 
 export const unknown = 'Неизвестно'
 export const patchLabel = { unknown: 'Нет данных', available: 'Есть обновление', current: 'Актуальная версия', error: 'Ошибка проверки' }
-export const dlcLabel = { configured: 'В конфигурации', verified: 'Проверено', unknown: 'Неизвестно', absent: 'Не входит' }
+export const dlcLabel = { included: 'В образе', not_added: 'Не добавлено' }
 export const fileLabel = { online: 'Файл доступен', offline: 'Файл недоступен', unlinked: 'Файл не привязан' }
 
 export function availableDlcCount(game: Game) {
   const known = new Set<string>()
   let unnamed = 0
   for (const item of game.dlc) {
-    if (item.status !== 'configured' && item.status !== 'verified') continue
+    if (item.status !== 'included') continue
     if (item.content_id) known.add('id:' + item.content_id)
     else unnamed += 1
   }

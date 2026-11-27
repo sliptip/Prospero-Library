@@ -39,7 +39,7 @@ def initial_game(db):
     db.executemany(
         "INSERT INTO dlc (game_id,name,description,status,content_id) VALUES (?,?,?,?,?)",
         [(game, "Midnight Edition DLC", "Костюмы в стиле Тревора и Сифы и реликвия Family’s Grace.",
-          "configured", "JP0101-PPSA35399_00-DLCBONUSCONTENTS"),
+          "included", "JP0101-PPSA35399_00-DLCBONUSCONTENTS"),
          (game, "Preorder Alucard Skin DLC", "Костюм Розы в стиле Алукарда.",
-          "configured", "JP0101-PPSA35399_00-DLCALUCARDSTYLEC")],
+          "included", "JP0101-PPSA35399_00-DLCALUCARDSTYLEC")],
     )

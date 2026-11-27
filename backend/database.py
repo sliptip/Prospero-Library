@@ -4,12 +4,14 @@ import sys
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from threading import RLock
 
 BASE = Path(__file__).resolve().parent.parent
 APP_DIRECTORY = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else BASE
 APP_ID = 1347571527
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
+LEGACY_DLC_STATUSES = {"configured": "included", "verified": "included", "absent": "not_added"}
 SCHEMA = """
 CREATE TABLE games (
     id INTEGER PRIMARY KEY, platform TEXT NOT NULL, title_id TEXT NOT NULL,
@@ -80,6 +82,7 @@ SCHEMAS = {
     3: SCHEMA + STORE_ABOUT_SCHEMA + CUSTOM_LOCALIZATION_SCHEMA + CUSTOM_LOCALIZATION_INDEX,
 }
 SCHEMAS[4] = SCHEMAS[3] + PS4_EXTRA_SCHEMA + PS4_EXTRA_INDEX
+SCHEMAS[5] = SCHEMAS[4]
 
 
 def now():
@@ -91,16 +94,26 @@ def app_data_directory():
     return (APP_DIRECTORY / path).resolve()
 
 
-def upgrade(db, version):
-    if version < SCHEMA_VERSION:
-        db.execute("BEGIN IMMEDIATE")
-        if version == 1:
-            db.execute(STORE_ABOUT_SCHEMA)
-        if version < 3:
-            db.execute(CUSTOM_LOCALIZATION_SCHEMA)
-            db.execute(CUSTOM_LOCALIZATION_INDEX)
+def upgrade(db, version, before_migration=None):
+    if version >= SCHEMA_VERSION:
+        return
+    db.execute("BEGIN IMMEDIATE")
+    version = db.execute("PRAGMA user_version").fetchone()[0]
+    if version >= SCHEMA_VERSION:
+        return
+    if before_migration is not None:
+        before_migration()
+    if version == 1:
+        db.execute(STORE_ABOUT_SCHEMA)
+    if version < 3:
+        db.execute(CUSTOM_LOCALIZATION_SCHEMA)
+        db.execute(CUSTOM_LOCALIZATION_INDEX)
+    if version < 4:
         db.execute(PS4_EXTRA_SCHEMA)
         db.execute(PS4_EXTRA_INDEX)
+    if version < 5:
+        db.executemany("UPDATE dlc SET status=? WHERE status=?",
+                       [(current, old) for old, current in LEGACY_DLC_STATUSES.items()])
         db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 
@@ -145,8 +158,16 @@ class Database:
             elif version not in SCHEMAS or db.execute("PRAGMA application_id").fetchone()[0] != APP_ID:
                 raise RuntimeError("Неподдерживаемая версия базы Prospero Library")
             else:
-                upgrade(db, version)
+                upgrade(db, version, before_migration=lambda: self.save_migration_snapshot("library-before-v5.db"))
             db.execute("UPDATE jobs SET status='interrupted', finished_at=? WHERE status IN ('running','cancelling')", (now(),))
+
+    def save_migration_snapshot(self, name):
+        prior = self.backups / name
+        if not prior.exists():
+            with TemporaryDirectory(dir=self.backups) as temporary:
+                snapshot = Path(temporary) / name
+                self.snapshot(snapshot)
+                snapshot.replace(prior)
 
     def snapshot(self, destination):
         with self.connect() as db:

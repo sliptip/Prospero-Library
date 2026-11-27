@@ -114,7 +114,7 @@ class LocalCatalogTest(unittest.TestCase):
         self.assertEqual((initial["version"], initial["firmware"], initial["size_bytes"]),
                          ("01.000.000", "13.40", 4043482656))
         self.assertEqual(len(initial["dlc"]), 2)
-        self.assertTrue(all(dlc["status"] == "configured" for dlc in initial["dlc"]))
+        self.assertTrue(all(dlc["status"] == "included" for dlc in initial["dlc"]))
         self.assertIsNone(initial["ru_audio"])
         self.assertIsNone(initial["patch"]["latest"])
         self.assertEqual(self.client.post("/api/games", json={"title": "Ёж", "platform": "PS4",
@@ -343,6 +343,7 @@ class LocalCatalogTest(unittest.TestCase):
         response = self.client.put("/api/games/1", json=updated)
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(self.initial()["dlc"][-1]["description"], full_description)
+        self.assertEqual(self.initial()["dlc"][-1]["status"], "not_added")
 
     def test_hide_recent_preference_survives_restart_and_settings_edits(self):
         self.assertFalse(self.client.get("/api/settings").json()["hide_recent"])
@@ -463,7 +464,7 @@ class LocalCatalogTest(unittest.TestCase):
         self.assertEqual(self.initial()["notes"], "Проверка старой библиотеки")
         for path in (file, self.data / "library.db"):
             with sqlite3.connect(path) as db:
-                self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 4)
+                self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], database.SCHEMA_VERSION)
                 self.assertEqual(db.execute("SELECT count(*) FROM store_about").fetchone()[0], 0)
                 self.assertEqual(db.execute("SELECT count(*) FROM custom_localizations").fetchone()[0], 0)
 
@@ -478,7 +479,7 @@ class LocalCatalogTest(unittest.TestCase):
         with TestClient(create_app(self.data), base_url="http://localhost") as reopened:
             self.assertEqual(reopened.get("/api/games/1").json()["custom_localizations"], [])
         with sqlite3.connect(self.data / "library.db") as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 4)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], database.SCHEMA_VERSION)
             self.assertEqual(json.loads(db.execute("SELECT details FROM store_about").fetchone()[0]), cached)
 
     def test_version_three_backup_restores_and_migrates(self):
@@ -493,6 +494,43 @@ class LocalCatalogTest(unittest.TestCase):
         restored = self.client.post("/api/backups/restore", json={"name": name})
         self.assertEqual(restored.status_code, 200, restored.text)
         self.assertEqual(self.initial()["local_packages"], [])
+
+    def test_dlc_statuses_migrate_on_startup_and_backup_restore(self):
+        file = self.data / "library.db"
+        rows = [
+            (1, "Настроенное", "Описание", "configured", "CONFIGURED-ID"),
+            (1, "Проверенное", None, "verified", "VERIFIED-ID"),
+            (1, "Сомнительное", None, "unknown", "UNKNOWN-ID"),
+            (1, "Исключённое", None, "absent", "ABSENT-ID"),
+        ]
+        with sqlite3.connect(file) as old:
+            old.execute("DELETE FROM dlc")
+            old.executemany("INSERT INTO dlc (game_id,name,description,status,content_id) VALUES (?,?,?,?,?)", rows)
+            old.execute("PRAGMA user_version=4")
+        expected = [
+            dict(name=name, description=description, status=status, content_id=content_id)
+            for (_, name, description, _, content_id), status in zip(rows, ("included", "included", "unknown", "not_added"))
+        ]
+        with TestClient(create_app(self.data), base_url="http://localhost") as reopened:
+            game = reopened.get("/api/games/1").json()
+            self.assertEqual(game["dlc"], expected)
+            updated = reopened.put("/api/games/1", json=game_body(game, notes="Изменение карточки"))
+            self.assertEqual(updated.status_code, 200, updated.text)
+            self.assertEqual(updated.json()["dlc"], expected)
+        prior = self.data / "backups" / "library-before-v5.db"
+        self.assertTrue(prior.is_file())
+        with sqlite3.connect(prior) as snapshot:
+            self.assertEqual(snapshot.execute("PRAGMA user_version").fetchone()[0], 4)
+            self.assertEqual(snapshot.execute("SELECT status FROM dlc ORDER BY id").fetchall(),
+                             [(row[3],) for row in rows])
+        name = "prospero-20261125-140000-000000.zip"
+        with ZipFile(self.data / "backups" / name, "w") as archive:
+            archive.write(prior, "library.db")
+        restored = self.client.post("/api/backups/restore", json={"name": name})
+        self.assertEqual(restored.status_code, 200, restored.text)
+        self.assertEqual(self.initial()["dlc"], expected)
+        with sqlite3.connect(file) as upgraded:
+            self.assertEqual(upgraded.execute("PRAGMA user_version").fetchone()[0], 5)
 
     def test_playstation_store_art_preserves_bytes_and_backup(self):
         content_id = self.initial()["content_id"]
