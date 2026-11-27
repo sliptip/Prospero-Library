@@ -21,8 +21,8 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import __version__, catalog, patches, scanner
 from .artwork import (ARTWORK_KEYS, ART_NAME, IMAGE_HOSTS, MAX_IMAGE, PS_STORE_SOURCE, STORE_PRODUCT_SETTING, Artwork,
-                      playstation_about, playstation_dlc, playstation_dlc_description, playstation_url, store_image,
-                      store_platform)
+                      link_local_dlc, playstation_about, playstation_dlc, playstation_dlc_description, playstation_url,
+                      store_image, store_platform)
 from .backup import BUNDLE_NAME, create_backup, restore_backup
 from .database import APP_DIRECTORY, BASE, Database, app_data_directory
 from .jobs import Jobs
@@ -251,12 +251,18 @@ def create_app(data_directory=None, frontend_directory=None):
             games = catalog.library(db, game_id)
         if not games:
             raise HTTPException(404, "Карточка не найдена")
-        content_id = games[0]["content_id"]
+        game = games[0]
+        content_id = game["content_id"]
         if not playstation_url(content_id):
             return []
         try:
             with httpx.Client(timeout=httpx.Timeout(12, connect=5), follow_redirects=False) as client:
-                return artwork.store_lookup(client, games[0]["title"], content_id, playstation_dlc) or []
+                candidates = artwork.store_lookup(
+                    client, game["title"], content_id,
+                    lambda client, product: playstation_dlc(client, product, platform=store_platform(content_id)),
+                    allow_cross_platform=True, is_usable=bool,
+                )
+            return link_local_dlc(candidates or [], content_id, game["local_packages"])
         except (httpx.HTTPError, KeyError, TypeError, ValueError, AttributeError, ImportError) as error:
             raise HTTPException(502, "Не удалось загрузить дополнения из PlayStation Store") from error
 

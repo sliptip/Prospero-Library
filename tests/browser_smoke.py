@@ -243,8 +243,9 @@ def run(screenshots, browser_executable):
             expect(dlc_status.first).to_have_value("included")
             expect(editor.get_by_role("combobox", name="Русский текст").locator("option:checked")).to_have_text("Авто · Есть")
             expansion = "JP0101-PPSA35399_00-EXPANSION0000001"
+            local_expansion = "JP0101-CUSA35399_00-EXPANSION0000001"
             page.route("**/api/games/1/store-dlc", lambda route: route.fulfill(json=[
-                {"id": expansion, "content_id": expansion, "kind": "dlc", "name": "DLC из магазина",
+                {"id": expansion, "content_id": local_expansion, "kind": "dlc", "name": "DLC из магазина",
                  "description": None, "locale": "ru-ua"},
                 {"id": "bonus", "content_id": None, "kind": "edition", "name": "Special Edition",
                  "description": "Цифровой артбук", "locale": "ru-ua"},
@@ -278,6 +279,9 @@ def run(screenshots, browser_executable):
             expect(page.get_by_role("heading", name="Отдельный перевод")).to_be_visible()
             expect(page.get_by_text("Бонусы Special Edition", exact=True)).to_be_visible()
             expect(page.get_by_text("Описание загружено из магазина", exact=True)).to_be_visible()
+            with sqlite3.connect(directory / "data" / "library.db") as db:
+                self_saved_id = db.execute("SELECT content_id FROM dlc WHERE name='DLC из магазина'").fetchone()
+                assert self_saved_id == (local_expansion,)
 
             full_description = ("Подробное описание. " * 60) + "Последняя строка из магазина."
             page.route("**/api/store-dlc/" + expansion + "?*", lambda route:

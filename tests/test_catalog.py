@@ -345,6 +345,59 @@ class LocalCatalogTest(unittest.TestCase):
         self.assertEqual(self.initial()["dlc"][-1]["description"], full_description)
         self.assertEqual(self.initial()["dlc"][-1]["status"], "not_added")
 
+    def test_shared_store_dlc_links_to_local_ps4_package(self):
+        package_id = "UP2045-CUSA27069_00-NSTW000000000000"
+        base_id = "UP2045-PPSA03332_00-6824837102800807"
+        store_id = "UP2045-PPSA03332_00-NSTWDLC010000000"
+        local_id = "UP2045-CUSA27069_00-NSTWDLC010000000"
+        exclusive = "UP2045-PPSA03332_00-EXCLUSIVE0000000"
+        with sqlite3.connect(self.data / "library.db") as db:
+            db.execute("UPDATE games SET title='Nobody Saves the World',platform='PS4',title_id='CUSA27069'")
+            db.execute("UPDATE builds SET content_id=?", (package_id,))
+            root = db.execute("INSERT INTO roots (path,state) VALUES ('fixture','online')").lastrowid
+            db.execute("""INSERT INTO ps4_extras (root_id,relpath,size_bytes,mtime,title_id,kind,title,content_id)
+                          VALUES (?,'Frozen Hearth.pkg',100,0,'CUSA27069','dlc','Frozen Hearth',?)""", (root, local_id))
+
+        def product_page(content_id, slot, cache):
+            props = {"productId": content_id, "locale": "en-us", "batarangs": {
+                slot: {"text": f"<script>{json.dumps({'cache': cache})}</script>"},
+            }}
+            payload = json.dumps({"props": {"pageProps": props}}).replace("<", r"\u003c")
+            return f'<script id="__NEXT_DATA__">{payload}</script>'
+
+        query = f'addOnProductsByProductIdRetrieve({{"productId":"{base_id}"}})'
+        addons = {
+            "ROOT_QUERY": {query: {"addOnProducts": [{"__ref": f"Product:{item}"} for item in (store_id, exclusive)]}},
+            f"Product:{store_id}": {"id": store_id, "name": "Frozen Hearth", "platforms": ["PS4", "PS5"]},
+            f"Product:{exclusive}": {"id": exclusive, "name": "PS5 only", "platforms": ["PS5"]},
+        }
+        pages = {
+            base_id: product_page(base_id, "add-ons", addons),
+            store_id: product_page(store_id, "info", {f"Product:{store_id}": {
+                "id": store_id, "descriptions": [{"type": "LONG", "value": "Frozen Hearth description"}],
+            }}),
+        }
+
+        def respond(request):
+            product = request.url.path.rsplit("/", 1)[-1]
+            if product == package_id:
+                return httpx.Response(302, headers={"Location": f"/en-us/product/{package_id}"})
+            if product in pages and request.url.path.startswith("/en-us/"):
+                return httpx.Response(200, text=pages[product])
+            return httpx.Response(404)
+
+        client = httpx.Client
+        transport = httpx.MockTransport(respond)
+        with patch("backend.main.httpx.Client", side_effect=lambda **kwargs: client(transport=transport, **kwargs)):
+            result = self.client.get("/api/games/1/store-dlc")
+            self.assertEqual(result.status_code, 200, result.text)
+            items = result.json()
+            self.assertEqual([(item["id"], item["content_id"]) for item in items], [(store_id, local_id)])
+            details = self.client.get(f"/api/store-dlc/{items[0]['id']}?locale=en-us")
+            self.assertEqual(details.json(), {"description": "Frozen Hearth description"})
+        self.assertEqual(self.initial()["local_packages"][0]["content_id"], local_id)
+        self.assertEqual(self.initial()["content_id"], package_id)
+
     def test_hide_recent_preference_survives_restart_and_settings_edits(self):
         self.assertFalse(self.client.get("/api/settings").json()["hide_recent"])
         self.assertTrue(self.client.patch("/api/settings/library", json={"hide_recent": True}).json()["hide_recent"])

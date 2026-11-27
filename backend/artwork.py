@@ -343,8 +343,8 @@ def playstation_dlc_description(client, content_id, locale):
     return fallback
 
 
-def playstation_dlc_candidates(props, content_id):
-    platform = "PS5" if "-PPSA" in content_id else "PS4"
+def playstation_dlc_candidates(props, content_id, *, platform=None):
+    platform = platform or store_platform(content_id)
     addons = playstation_cache(props, "add-ons")
     related = []
     for key, value in addons.get("ROOT_QUERY", {}).items():
@@ -394,7 +394,7 @@ def playstation_dlc_candidates(props, content_id):
     return candidates
 
 
-def playstation_dlc(client, content_id):
+def playstation_dlc(client, content_id, *, platform=None):
     failure = None
     source = None
     candidates = []
@@ -404,7 +404,7 @@ def playstation_dlc(client, content_id):
             props = playstation_props(bounded_get(client, url, 3_000_000), content_id)
             if props:
                 source = props, locale
-                candidates = playstation_dlc_candidates(props, content_id)
+                candidates = playstation_dlc_candidates(props, content_id, platform=platform)
                 if candidates:
                     break
         except httpx.HTTPStatusError as error:
@@ -418,9 +418,26 @@ def playstation_dlc(client, content_id):
         return None
     props, locale = source
     items = {(item["kind"], item["id"]): item for item in candidates}
-    for item in related_store_dlc(client, props, content_id, locale):
+    for item in related_store_dlc(client, props, content_id, locale, platform=platform):
         items.setdefault((item["kind"], item["id"]), item)
     return list(items.values())
+
+
+def link_local_dlc(items, package_id, local_packages):
+    store_product = STORE_PRODUCT_ALIASES.get(package_id)
+    if not store_product or store_platform(store_product) == store_platform(package_id):
+        return items
+
+    local_ids = {item["content_id"] for item in local_packages if item["kind"] == "dlc"}
+    store_prefix = store_product.partition("_")[0]
+    package_prefix = package_id.partition("_")[0]
+    linked = []
+    for item in items:
+        source = item["content_id"] or ""
+        prefix, _, suffix = source.partition("_")
+        local = f"{package_prefix}_{suffix}"
+        linked.append({**item, "content_id": local} if prefix == store_prefix and local in local_ids else item)
+    return linked
 
 
 def product_concept(props, content_id):
@@ -440,7 +457,7 @@ def concept_default_product(props, ref):
     return None
 
 
-def related_store_dlc(client, props, content_id, source_locale):
+def related_store_dlc(client, props, content_id, source_locale, *, platform=None):
     ref = product_concept(props, content_id)
     if not ref:
         return []
@@ -458,7 +475,7 @@ def related_store_dlc(client, props, content_id, source_locale):
             related = playstation_props(bounded_get(client, url, 3_000_000), related_id)
             if product_concept(related, related_id) != ref:
                 continue
-            candidates = [item for item in playstation_dlc_candidates(related, related_id)
+            candidates = [item for item in playstation_dlc_candidates(related, related_id, platform=platform)
                           if item["kind"] == "dlc" and item["id"][:6] == content_id[:6]]
             if candidates:
                 return candidates

@@ -33,7 +33,8 @@ function storeDlcName(item: StoreDlc) {
 }
 
 function matchesStoreDlc(item: Dlc, candidate: StoreDlc) {
-  if (candidate.content_id && item.content_id) return item.content_id === candidate.content_id
+  if (candidate.content_id && item.content_id)
+    return item.content_id === candidate.content_id || item.content_id === candidate.id
   const name = item.name.trim().toLocaleLowerCase()
   return name === storeDlcName(candidate).toLocaleLowerCase() ||
     (candidate.kind === 'edition' && name.replace(/ dlc$/, '') === candidate.name.toLocaleLowerCase())
@@ -87,7 +88,7 @@ export function GameEditor({ game, close, save }: { game?: Game; close: () => vo
     setAddingDlc(item.id)
     let description = item.description
     if (item.content_id && !description) {
-      const url = '/store-dlc/' + encodeURIComponent(item.content_id) + '?locale=' + encodeURIComponent(item.locale)
+      const url = '/store-dlc/' + encodeURIComponent(item.id) + '?locale=' + encodeURIComponent(item.locale)
       const details = await api<{ description: string | null }>(url).catch(() => null)
       description = details?.description ?? null
     }
@@ -100,7 +101,7 @@ export function GameEditor({ game, close, save }: { game?: Game; close: () => vo
       const existing = items.find(row => matchesStoreDlc(row, item))
       if (existing) return items.map(row => row === existing ? {
         ...row, description: item.kind === 'edition' || refreshDescription ? description : row.description || description,
-        content_id: row.content_id || item.content_id,
+        content_id: item.content_id || row.content_id,
       } : row)
       if (refreshDescription || items.length >= 100) return items
       return [...items, { ...blankDlc, name: storeDlcName(item), description, content_id: item.content_id }]
