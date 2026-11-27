@@ -275,7 +275,7 @@ function AboutGameDialog({ about, close, retry }: { about: AboutState; close: ()
         {about.game?.description ? <>
           {about.game.language === 'en' && <p className="muted about-game-language">Описание на английском</p>}
           <p className="about-game-description" lang={about.game.language}>{about.game.description}</p>
-        </> : <p className="muted">В PlayStation Store нет описания для этой игры.</p>}
+        </> : <p className="muted">Не удалось найти описание в PlayStation Store.</p>}
         {about.game?.url?.startsWith('https://store.playstation.com/') && <a href={about.game.url} target="_blank" rel="noreferrer" className="text-button note">
           PlayStation Store <ExternalLink size={13} />
         </a>}

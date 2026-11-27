@@ -22,6 +22,10 @@ PS_STORE_HOST = "image.api.playstation.com"
 PS_STORE_SOURCE = "PlayStation Store"
 STORE_PRODUCT_SETTING = "store_product:"
 PS_STORE_PRODUCT = re.compile(r"[A-Z]{2}[0-9]{4}-(?:PPSA|CUSA)[0-9]{5}_00-[A-Z0-9]{16}")
+STORE_PRODUCT_ALIASES = {
+    "UP0006-PPSA02342_00-NUTSNA0000000000": "UP0006-PPSA02342_00-ITTAKESTWORETAIL",
+    "UP2045-CUSA27069_00-NSTW000000000000": "UP2045-PPSA03332_00-6824837102800807",
+}
 LANGUAGE_PACK = re.compile(
     r"language pack|voice pack|voice[- ]?over pack|audio language|языков\w* пакет|пакет (?:язык\w*|озвучки)|"
     r"sprachpaket|pack de (?:idiomas?|langues?)|pacote de idioma|pacchetto lingu|言語パック|语言包|語言包|언어 팩", re.I,
@@ -109,6 +113,16 @@ def same_store_title(content_id, candidate):
                 and candidate.partition("_")[0] == content_id.partition("_")[0])
 
 
+def store_platform(content_id):
+    return "PS5" if "-PPSA" in content_id else "PS4"
+
+
+def store_title_label(title):
+    name = comparable(title.replace("™", "").replace("®", ""))
+    return re.sub(r"(?:\s+(?:and|и|en|et|und))?(?:\s+ps[45])(?:\s+(?:(?:and|и|en|et|und)\s+)?ps[45])?$",
+                  "", name)
+
+
 class PlayStationEditionLinks(HTMLParser):
     def __init__(self, title, content_id):
         super().__init__()
@@ -120,12 +134,14 @@ class PlayStationEditionLinks(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         if tag == "a":
-            url = urlsplit(dict(attrs).get("href") or "")
+            attributes = dict(attrs)
+            url = urlsplit(attributes.get("href") or "")
             product = url.path.rstrip("/").rsplit("/", 1)[-1]
             if (url.scheme == "https" and url.netloc == "store.playstation.com"
                     and re.fullmatch(r"/[a-z]{2}-[a-z]{2}/product/[^/]+/?", url.path)
                     and product != self.content_id and same_store_title(self.content_id, product)):
                 self.product = product
+                self.label = attributes.get("aria-label") or ""
                 self.text = []
 
     def handle_data(self, data):
@@ -134,13 +150,13 @@ class PlayStationEditionLinks(HTMLParser):
 
     def handle_endtag(self, tag):
         if tag == "a" and self.product:
-            if comparable(" ".join(self.text)) in self.labels:
+            if any(store_title_label(label) in self.labels for label in (self.label, " ".join(self.text))):
                 self.matches.add(self.product)
             self.product = None
 
 
 def find_store_product(client, title, content_id):
-    name = comparable(title)
+    name = store_title_label(title)
     if not name or name == content_id[7:16].lower():
         return None
     locale = {"EP": "en-gb", "JP": "ja-jp", "HP": "en-hk"}.get(content_id[:2], "en-us")
@@ -249,11 +265,11 @@ def description_text(descriptions):
     return None
 
 
-def store_languages(info, field, platform):
+def store_languages(info, field, platform, *, allow_shared=True):
     by_platform = info.get(field + "ByPlatform") or []
     codes = next((row[field] for row in by_platform if isinstance(row, dict)
                   and row.get("platform") == platform and isinstance(row.get(field), list) and row[field]), None)
-    if codes is None and (not info.get("platforms") or info["platforms"] == [platform]):
+    if codes is None and (info.get("platforms") == [platform] or (allow_shared and not info.get("platforms"))):
         codes = info.get(field)
     if not isinstance(codes, list):
         return None
@@ -269,7 +285,7 @@ def prefer_languages(about, metadata):
             about["localization"][key] = languages or about["localization"][key]
 
 
-def playstation_details(props, content_id, locale):
+def playstation_details(props, content_id, locale, *, platform=None):
     info = playstation_slot(props, "info", content_id)
     title = playstation_slot(props, "game-title", content_id)
     if not (info or title):
@@ -292,15 +308,18 @@ def playstation_details(props, content_id, locale):
     actual_locale = props.get("locale") or locale
     russian = actual_locale.startswith("ru-") and bool(description and
                   len(re.findall("[А-Яа-яЁё]", description)) > len(re.findall("[A-Za-z]", description)))
-    platform = "PS5" if "-PPSA" in content_id else "PS4"
+    product_platform = store_platform(content_id)
+    platform = platform or product_platform
+    languages = {
+        kind: store_languages(info, field, platform, allow_shared=platform == product_platform)
+        or store_languages(title, field, platform, allow_shared=platform == product_platform)
+        for kind, field in (("screen", "screenLanguages"), ("audio", "spokenLanguages"))
+    }
     return {
         "description": description, "language": "ru" if russian else "en",
         "publisher": publisher if isinstance(publisher, str) else None, "genres": genres,
         "release_date": release_date, "players": players,
-        "localization": {
-            "screen": store_languages(info, "screenLanguages", platform) or store_languages(title, "screenLanguages", platform),
-            "audio": store_languages(info, "spokenLanguages", platform) or store_languages(title, "spokenLanguages", platform),
-        },
+        "localization": languages,
         "url": playstation_url(content_id, actual_locale if actual_locale in ("ru-ua", "en-us") else locale),
     }
 
@@ -448,7 +467,7 @@ def related_store_dlc(client, props, content_id, source_locale):
     return []
 
 
-def russian_concept(client, product_props, content_id):
+def russian_concept(client, product_props, content_id, *, platform=None):
     ref = product_concept(product_props, content_id)
     if not ref:
         return None
@@ -458,7 +477,7 @@ def russian_concept(client, product_props, content_id):
     localized_id = concept_default_product(props, ref)
     if not playstation_url(localized_id) or localized_id[7:11] != content_id[7:11]:
         return None
-    result = playstation_details(props, localized_id, "ru-ua")
+    result = playstation_details(props, localized_id, "ru-ua", platform=platform)
     if result and result["language"] == "ru":
         result["url"] = url
         if localized_id != content_id:
@@ -467,13 +486,13 @@ def russian_concept(client, product_props, content_id):
     return None
 
 
-def playstation_about(client, content_id):
+def playstation_about(client, content_id, *, platform=None):
     metadata, failure = None, None
     for locale in playstation_locales(content_id):
         url = playstation_url(content_id, locale)
         try:
             props = playstation_props(bounded_get(client, url, 3_000_000), content_id)
-            about = playstation_details(props, content_id, locale)
+            about = playstation_details(props, content_id, locale, platform=platform)
         except httpx.HTTPStatusError as error:
             if not (error.response.is_redirect or error.response.status_code in (404, 410)):
                 failure = error
@@ -488,7 +507,7 @@ def playstation_about(client, content_id):
             continue
         if locale != "ru-ua":
             try:
-                localized = russian_concept(client, props, content_id)
+                localized = russian_concept(client, props, content_id, platform=platform)
             except (httpx.HTTPError, KeyError, TypeError, ValueError, AttributeError):
                 localized = None
             if localized:
@@ -624,43 +643,61 @@ class Artwork:
             time.sleep(0.3)
         return result
 
-    def store_lookup(self, client, title, content_id, fetch):
+    def store_lookup(self, client, title, content_id, fetch, *, allow_cross_platform=False, is_usable=None):
         setting = STORE_PRODUCT_SETTING + content_id
+        known = STORE_PRODUCT_ALIASES.get(content_id)
+        if known and not allow_cross_platform and store_platform(known) != store_platform(content_id):
+            known = None
         cached = None
         if self.database is not None:
             with self.database.connect() as db:
                 row = db.execute("SELECT value FROM settings WHERE key=?", (setting,)).fetchone()
-                if row and same_store_title(content_id, row["value"]):
+                if row and (row["value"] == known or same_store_title(content_id, row["value"])):
                     cached = row["value"]
-        failure = None
-        result = None
-        for product in dict.fromkeys((cached or content_id, content_id)):
+
+        first_choices = dict.fromkeys(product for product in (cached, content_id, known) if product)
+
+        def products():
+            yield from first_choices
+            alternate = find_store_product(client, title, content_id)
+            if alternate and alternate not in first_choices:
+                yield alternate
+
+        failure, partial = None, None
+        for product in products():
             try:
                 result = fetch(client, product)
             except httpx.HTTPStatusError as error:
                 if not (error.response.is_redirect or error.response.status_code in (404, 410)):
                     raise
                 failure = error
-                result = None
-            if result is not None:
-                return result
-
-        alternate = find_store_product(client, title, content_id)
-        if alternate and alternate != cached:
-            result = fetch(client, alternate)
-            if result is not None and self.database is not None:
+                continue
+            except httpx.TimeoutException as error:
+                failure = error
+                continue
+            if result is None:
+                continue
+            if is_usable is not None and not is_usable(result):
+                if partial is None:
+                    partial = result
+                continue
+            if product not in (cached, content_id) and self.database is not None:
                 with self.database.connect() as db:
                     db.execute("INSERT INTO settings VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                               (setting, alternate))
-                logger.info("PlayStation Store: для PKG %s найдена карточка %s", content_id, alternate)
-        if result is None and failure:
+                               (setting, product))
+                logger.info("PlayStation Store: для PKG %s найдена карточка %s", content_id, product)
+            return result
+        if partial is not None:
+            return partial
+        if failure:
             raise failure
-        return result
+        return None
 
     def playstation(self, client, title, content_id):
         if not playstation_url(content_id):
             return []
-        return self.store_lookup(client, title, content_id, lambda client, product: self.store_media(client, title, product)) or []
+        return self.store_lookup(client, title, content_id, lambda client, product: self.store_media(client, title, product),
+                                 allow_cross_platform=True, is_usable=bool) or []
 
     def store_media(self, client, title, content_id):
         failure = None
@@ -672,6 +709,9 @@ class Artwork:
             except httpx.HTTPStatusError as error:
                 if not (error.response.is_redirect or error.response.status_code in (404, 410)):
                     raise
+                failure = error
+                continue
+            except httpx.TimeoutException as error:
                 failure = error
                 continue
             if props := playstation_props(page, content_id):

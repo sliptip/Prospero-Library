@@ -676,7 +676,7 @@ class LocalCatalogTest(unittest.TestCase):
             <a href="{artwork.playstation_url(similar_id)}">Standard Edition</a>
             <a href="{artwork.playstation_url(wrong_region_id)}">Standard Edition</a>
             <a href="{artwork.playstation_url(demo_id, 'en-gb')}">FINAL FANTASY VII REBIRTH DEMO</a>
-            <a href="{artwork.playstation_url(store_id, 'en-gb')}"><span>Standard Edition</span></a>
+            <a href="{artwork.playstation_url(store_id, 'en-gb')}"><span>FINAL FANTASY VII REBIRTH PS4™ &amp; PS5™</span></a>
         """
         cover = "https://image.api.playstation.com/vulcan/rebirth-cover.jpg"
         background = "https://image.api.playstation.com/vulcan/rebirth-background.jpg"
@@ -729,6 +729,75 @@ class LocalCatalogTest(unittest.TestCase):
         self.assertEqual(requests, [*(artwork.playstation_url(package_id, locale)
                                       for locale in ("ru-ua", "en-gb", "en-us")),
                                     marketing, verified, cover, verified])
+
+    def test_known_store_products_recover_existing_cards_without_changing_package_identity(self):
+        cases = [
+            ("Nobody Saves the World", "PS4", "CUSA27069", "UP2045-CUSA27069_00-NSTW000000000000",
+             "UP2045-PPSA03332_00-6824837102800807", {"screen": ["ru"], "audio": None}, 302),
+            ("It Takes Two", "PS5", "PPSA02342", "UP0006-PPSA02342_00-NUTSNA0000000000",
+             "UP0006-PPSA02342_00-ITTAKESTWORETAIL", {"screen": ["en"], "audio": ["en"]}, 302),
+        ]
+        cover = "https://image.api.playstation.com/vulcan/recovered-cover.jpg"
+        for title, platform, title_id, package_id, store_id, languages, status in cases:
+            with self.subTest(title=title):
+                with sqlite3.connect(self.data / "library.db") as db:
+                    db.execute("UPDATE games SET title=?,platform=?,title_id=?,cover=NULL,background=NULL",
+                               (title, platform, title_id))
+                    db.execute("UPDATE builds SET content_id=?", (package_id,))
+                    db.execute("INSERT INTO store_about VALUES (?, 'ru', ?)", (package_id, json.dumps({
+                        "description": None, "language": "ru", "localization": {},
+                    })))
+                product = {
+                    "id": store_id, "screenLanguagesByPlatform": [
+                        {"platform": "PS4", "screenLanguages": ["ru"]},
+                        {"platform": "PS5", "screenLanguages": ["en"]},
+                    ], "spokenLanguages": ["en"],
+                    "descriptions": [{"type": "LONG", "value": "Store description"}],
+                    "media": [{"role": "MASTER", "type": "IMAGE", "url": cover}],
+                }
+                fragment = {"text": "<script>" + json.dumps({"cache": {f"Product:{store_id}": product}}) + "</script>"}
+                props = {"productId": store_id, "locale": "en-us",
+                         "batarangs": {"info": fragment, "upsells": fragment}}
+                page = json.dumps({"props": {"pageProps": props}}).replace("<", r"\u003c")
+                requests = []
+
+                def respond(request):
+                    requests.append(str(request.url))
+                    if request.url.path.endswith(package_id):
+                        if request.url.path.startswith("/ru-ua/"):
+                            raise httpx.ReadTimeout("Temporary Store timeout", request=request)
+                        return httpx.Response(status, headers={"Location": f"/en-us/product/{package_id}"})
+                    if str(request.url) == artwork.playstation_url(store_id):
+                        return httpx.Response(200, text=f'<script id="__NEXT_DATA__">{page}</script>')
+                    if str(request.url) == artwork.playstation_url(store_id, "ru-ua"):
+                        return httpx.Response(404)
+                    raise AssertionError(f"Unexpected Store request: {request.url}")
+
+                client = httpx.Client
+                providers = {"PlayStation Store": True, "IGDB": False, "SteamGridDB": False}
+                with patch.object(artwork.Artwork, "providers", return_value=providers), patch.object(
+                    artwork.httpx, "Client",
+                    side_effect=lambda **kwargs: client(transport=httpx.MockTransport(respond), **kwargs),
+                ):
+                    response = self.client.get("/api/games/1/about")
+                    self.assertEqual(response.status_code, 200, response.text)
+                    self.assertEqual(response.json()["description"], "Store description")
+                    self.assertEqual(response.json()["localization"], languages)
+                    self.assertEqual(requests, [
+                        artwork.playstation_url(package_id, "ru-ua"), artwork.playstation_url(package_id),
+                        artwork.playstation_url(store_id, "ru-ua"), artwork.playstation_url(store_id),
+                    ])
+                    requests.clear()
+                    self.assertEqual(self.client.get("/api/games/1/about").json(), response.json())
+                    self.assertEqual(requests, [])
+                    found = self.client.post("/api/games/1/artwork/search").json()
+                    self.assertEqual(found["issues"], [])
+                    self.assertEqual([item["url"] for item in found["items"]], [cover])
+                    self.assertEqual(requests, [
+                        artwork.playstation_url(store_id, "ru-ua"), artwork.playstation_url(store_id),
+                    ])
+                game = self.initial()
+                self.assertEqual((game["platform"], game["title_id"], game["content_id"]), (platform, title_id, package_id))
 
     def test_fih_game_type_and_package_exclusions(self):
         metadata = scanner.parse_metadata(CASTLEVANIA_INFO, Path("Castlevania.pkg"))

@@ -21,7 +21,8 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import __version__, catalog, patches, scanner
 from .artwork import (ARTWORK_KEYS, ART_NAME, IMAGE_HOSTS, MAX_IMAGE, PS_STORE_SOURCE, STORE_PRODUCT_SETTING, Artwork,
-                      playstation_about, playstation_dlc, playstation_dlc_description, playstation_url, store_image)
+                      playstation_about, playstation_dlc, playstation_dlc_description, playstation_url, store_image,
+                      store_platform)
 from .backup import BUNDLE_NAME, create_backup, restore_backup
 from .database import APP_DIRECTORY, BASE, Database, app_data_directory
 from .jobs import Jobs
@@ -212,12 +213,17 @@ def create_app(data_directory=None, frontend_directory=None):
                 return None
             cached = db.execute("SELECT details FROM store_about WHERE content_id=?", (content_id,)).fetchone()
         saved = json.loads(cached["details"]) if cached else None
-        if saved and "localization" in saved:
+        saved_description = saved.get("description") if saved else None
+        if saved_description and "localization" in saved:
             return saved
 
         try:
             with httpx.Client(timeout=httpx.Timeout(18, connect=5), follow_redirects=False) as client:
-                details = artwork.store_lookup(client, item["title"], content_id, playstation_about)
+                details = artwork.store_lookup(
+                    client, item["title"], content_id,
+                    lambda client, product: playstation_about(client, product, platform=store_platform(content_id)),
+                    allow_cross_platform=True, is_usable=lambda result: saved_description or result.get("description"),
+                )
         except httpx.HTTPStatusError as error:
             if saved:
                 return saved
@@ -227,13 +233,14 @@ def create_app(data_directory=None, frontend_directory=None):
                 return saved
             raise HTTPException(502, "Не удалось получить описание из PlayStation Store") from error
         if details:
-            if saved and saved["language"] == "ru" and details["language"] != "ru":
+            if saved_description and saved["language"] == "ru" and details["language"] != "ru":
                 details = {**saved, "localization": details["localization"]}
             with database.connect() as db:
                 db.execute(
                     """INSERT INTO store_about(content_id,language,details) VALUES (?,?,?)
                        ON CONFLICT(content_id) DO UPDATE SET language=excluded.language, details=excluded.details
-                       WHERE store_about.language != 'ru' OR excluded.language = 'ru'""",
+                       WHERE store_about.language != 'ru' OR excluded.language = 'ru'
+                          OR COALESCE(json_extract(store_about.details, '$.description'), '') = ''""",
                     (content_id, details["language"], json.dumps(details, ensure_ascii=False)),
                 )
         return details or saved
