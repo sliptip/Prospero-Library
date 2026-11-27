@@ -136,6 +136,39 @@ def run(screenshots, browser_executable):
                 expect(sorted_page.get_by_role("img", name="Есть обновление")).to_have_attribute("title", re.compile("По данным проверки"))
             sorted_page.close()
 
+            tile = page.locator(".game-tile").filter(has_text="Castlevania")
+            tile.click()
+            page.get_by_role("button", name="Указать патч вручную").click()
+            dialog = page.get_by_role("dialog", name="Указать патч вручную")
+            dialog.get_by_label("Версия патча").fill("01.000.000")
+            dialog.get_by_role("button", name="Сохранить").click()
+            expect(dialog).not_to_be_visible()
+            expect(page.get_by_text("Актуальная версия", exact=True)).to_be_visible()
+            expect(page.get_by_text("Версия для сравнения · Вручную")).to_be_visible()
+            page.get_by_role("button", name="К библиотеке").click()
+            expect(tile.get_by_role("img", name="Актуальная версия")).to_have_attribute("title", re.compile("вручную"))
+
+            tile.click()
+            page.get_by_role("button", name="Изменить ручной патч").click()
+            dialog = page.get_by_role("dialog", name="Изменить ручной патч")
+            expect(dialog.get_by_label("Версия патча")).to_have_value("01.000.000")
+            dialog.get_by_label("Версия патча").fill("01.009.000")
+            dialog.get_by_label("Требуемая прошивка").fill("13.60")
+            dialog.get_by_role("button", name="Сохранить").click()
+            expect(dialog).not_to_be_visible()
+            expect(page.get_by_text("Есть обновление", exact=True)).to_be_visible()
+            expect(page.get_by_text("Совместимый патч · 13.60")).to_be_visible()
+            expect(page.get_by_text("01.009.000 · Вручную", exact=True)).to_be_visible()
+            page.reload(wait_until="networkidle")
+            expect(page.get_by_text("Версия для сравнения · Вручную")).to_be_visible()
+            page.get_by_role("button", name="Изменить ручной патч").click()
+            expect(dialog.get_by_label("Требуемая прошивка")).to_have_value("13.60")
+            dialog.get_by_role("button", name="Удалить ручную запись").click()
+            expect(dialog).not_to_be_visible()
+            expect(page.get_by_role("button", name="Указать патч вручную")).to_be_visible()
+            page.get_by_role("button", name="К библиотеке").click()
+            expect(tile.get_by_role("img", name="Есть обновление")).not_to_be_visible()
+
             page.get_by_role("link", name="Настройки").click()
             page.get_by_role("button", name="Задать ключ SteamGridDB").click()
             artwork_dialog = page.get_by_role("dialog", name="Настройки SteamGridDB")
@@ -517,7 +550,7 @@ def run(screenshots, browser_executable):
             expect(collection_version.get_by_text("01.05", exact=True)).to_be_visible()
             expect(page.get_by_text("На диске", exact=True).locator("..")).to_contain_text("Файл недоступен")
             assert not errors, errors
-    print("Browser smoke passed: desktop/tablet/phone, journal, edit, artwork, manual order, restart, backup and restore.")
+    print("Browser smoke passed: desktop/tablet/phone, manual patch, journal, edit, artwork, manual order, restart, backup and restore.")
 
 
 if __name__ == "__main__":

@@ -23,7 +23,7 @@ function CollectionPatchStatus({ patch }: { patch: PatchInfo }) {
   const { state } = patch
   if (state !== 'current' && state !== 'available') return null
   const Icon = state === 'current' ? CircleCheck : CircleArrowUp
-  const tooltip = [patchLabel[state], patchCacheNote(patch)].filter(Boolean).join(' · ')
+  const tooltip = [patchLabel[state], patch.manual_active ? 'Версия указана вручную' : patchCacheNote(patch)].filter(Boolean).join(' · ')
   return <span className={'collection-patch-status ' + state} role="img" aria-label={patchLabel[state]} title={tooltip}>
     <Icon size={13} aria-hidden="true" />
   </span>

@@ -1307,6 +1307,78 @@ class LocalCatalogTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["patch"]["manual"]["source"], "Вручную")
         self.assertEqual(response.json()["patch"]["latest"]["version"], "01.012.000")
+        self.assertTrue(response.json()["patch"]["manual_active"])
+
+    def test_manual_patch_survives_failed_checks_and_defers_to_confirmed_versions(self):
+        url = "/api/games/1/manual-patch"
+
+        def check_again(online_version=None):
+            def respond(_):
+                if online_version is None:
+                    raise httpx.ReadTimeout("fixture")
+                return httpx.Response(200, content=(
+                    f'<titlepatch><package content_ver="{online_version}" system_ver="337641479"/></titlepatch>'
+                ).encode())
+
+            client = httpx.Client(transport=httpx.MockTransport(respond))
+            with patch.object(patches.httpx, "Client", return_value=client):
+                self.wait_job(self.client.post("/api/updates?game_id=1"))
+            return self.initial()["patch"]
+
+        self.assertEqual(check_again()["state"], "error")
+        self.assertEqual(self.client.put(url, json={"version": "invalid"}).status_code, 422)
+        self.assertEqual(self.client.put(url, json={"version": None, "firmware": "13.60"}).status_code, 422)
+        self.assertEqual(self.client.put("/api/games/999/manual-patch", json={"version": "01.05"}).status_code, 404)
+
+        response = self.client.put(url, json={"version": "01.000.000"})
+        self.assertEqual(response.status_code, 200, response.text)
+        update = response.json()["patch"]
+        self.assertEqual(update["state"], "current")
+        self.assertTrue(update["manual_active"])
+        self.assertIsNone(update["latest"])
+        self.assertIsNone(update["compatible"])
+        self.assertFalse(update["cached"])
+
+        response = self.client.put(url, json={"version": "01.014.000", "firmware": "13.60"})
+        self.assertEqual(response.status_code, 200, response.text)
+        update = response.json()["patch"]
+        self.assertEqual(update["state"], "available")
+        self.assertEqual(update["compatible"], update["manual"])
+        self.assertEqual(update["history"], [])
+        self.assertEqual(check_again()["manual"], update["manual"])
+        with TestClient(create_app(self.data), base_url="http://localhost") as restarted:
+            self.assertEqual(restarted.get("/api/games/1").json()["patch"]["manual"], update["manual"])
+
+        older = check_again("01.012.000")
+        self.assertTrue(older["manual_active"])
+        self.assertEqual(older["latest"]["version"], "01.012.000")
+        equal = check_again("1.14")
+        self.assertFalse(equal["manual_active"])
+        self.assertEqual(equal["latest"]["source"], patches.SOURCE)
+        newer = check_again("01.016.000")
+        self.assertFalse(newer["manual_active"])
+        self.assertEqual(newer["manual"], update["manual"])
+        self.assertEqual(newer["latest"]["version"], "01.016.000")
+        self.assertEqual(self.client.put(url, json={"version": "01.018.000"}).json()["patch"]["state"], "available")
+        self.assertEqual(self.client.put(url, json={"version": None}).status_code, 200)
+        removed = self.client.put(url, json={"version": None}).json()["patch"]
+        self.assertIsNone(removed["manual"])
+        self.assertFalse(removed["manual_active"])
+        self.assertEqual(removed["latest"], newer["latest"])
+        self.assertEqual(removed["history"], newer["history"])
+
+    def test_manual_patch_uses_ps4_collection_version(self):
+        response = self.client.post("/api/games", json={
+            "title": "PS4 test", "platform": "PS4", "title_id": "CUSA12345", "version": "01.05",
+        })
+        game_id = response.json()["id"]
+        url = f"/api/games/{game_id}/manual-patch"
+        state = self.client.put(url, json={"version": "01.06", "firmware": "99.99"}).json()["patch"]
+        self.assertEqual(state["state"], "available")
+        self.assertIsNone(state["compatible"])
+        state = self.client.put(url, json={"version": "1.5"}).json()["patch"]
+        self.assertEqual(state["state"], "current")
+        self.assertIsNone(state["compatible"])
 
     def test_prosperopatches_online_fallback(self):
         key = "a" * 64

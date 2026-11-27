@@ -351,6 +351,14 @@ def create_app(data_directory=None, frontend_directory=None, app_updater=None):
         except ValueError as error:
             raise HTTPException(422, str(error)) from error
 
+    @app.put("/api/games/{game_id}/manual-patch")
+    def update_manual_patch(game_id: int, item: catalog.ManualPatchInput):
+        with database.connect() as db:
+            if not db.execute("SELECT 1 FROM games WHERE id=?", (game_id,)).fetchone():
+                raise HTTPException(404, "Игра не найдена")
+            catalog.set_manual_patch(db, game_id, item.version, item.firmware)
+            return required_game(db, game_id)
+
     @app.delete("/api/games/{game_id}")
     def delete_game(game_id: int):
         with jobs.lock, database.connect() as db:

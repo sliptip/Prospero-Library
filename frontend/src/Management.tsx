@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { Clipboard, Download, FileText, Folder, History, Plus, RefreshCw, RotateCcw, ScanLine, Trash2, X } from 'lucide-react'
-import { CompatiblePatch, Dialog } from './Game'
+import { CompatiblePatch, Dialog, ManualPatchDetails } from './Game'
 import { Cover } from './Library'
 import { api, dateText, json, patchCacheNote, patchFirmwareText, patchLabel, unknown } from './model'
 import type { Game, Job, Root, Settings } from './model'
@@ -12,7 +12,7 @@ export function Updates({ games, open, start, busy }: {
   const [expanded, setExpanded] = useState<number | null>(null)
   return <>
     <div className="page-intro section-heading">
-      <div><h1>Обновления</h1><p>Официальные патчи и требования к прошивке</p></div>
+      <div><h1>Обновления</h1><p>Версии патчей и требования к прошивке</p></div>
       <button className="button primary" disabled={busy || !games.length} onClick={() => start()}><RefreshCw size={17} /> Проверить все</button>
     </div>
     <div className="management-stack">
@@ -30,6 +30,7 @@ export function Updates({ games, open, start, busy }: {
           <div><dt>Прошивка патча</dt><dd className="mono" title={game.patch.latest?.firmware ?? undefined}>
             {patchFirmwareText(game.patch.latest?.firmware)}</dd></div>
           <CompatiblePatch patch={game.patch} />
+          <ManualPatchDetails patch={game.patch} />
         </dl>
         {game.patch.cached && <p className="muted note">{patchCacheNote(game.patch)}</p>}
         {game.patch.check?.message && <p className="muted note">{game.patch.check.message}</p>}

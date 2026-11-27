@@ -237,6 +237,7 @@ export function App() {
           open={game => showGame(game.id)} add={() => setMode('new')} swap={swapGames} />}
         {ready && current && <GamePage key={current.id} game={current} back={() => navigate('/')} edit={() => setMode('edit')}
           onStoreDetails={saveStoreDetails}
+          onManualPatch={saved => setGames(items => items.map(item => item.id === saved.id ? { ...item, patch: saved.patch } : item))}
           art={() => setMode('art')} updating={updating} updates={() => void start('/updates?game_id=' + current.id)}
           removed={() => { setGames(items => items.filter(game => game.id !== current.id)); navigate('/', true); setNotice('Карточка удалена') }} />}
         {ready && detail && !current && <div className="empty-state"><Gamepad2 size={28} /><p>Карточка не найдена</p>

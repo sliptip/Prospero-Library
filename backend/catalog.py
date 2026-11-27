@@ -11,6 +11,7 @@ from .seed import LEGACY_ART, PUBLISHER_METADATA
 
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=256)]
 Version = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^[0-9]{1,4}(?:\.[0-9]{1,4}){1,3}$")]
+MANUAL_PATCH_SOURCE = "Вручную"
 
 
 class DLC(BaseModel):
@@ -67,6 +68,18 @@ class GameInput(BaseModel):
             from .patches import safe_manifest_url
             if not safe_manifest_url(self.manifest_uri, self.title_id):
                 raise ValueError("Нужен HTTPS XML-манифест Sony для указанного Title ID")
+        return self
+
+
+class ManualPatchInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    version: Version | None
+    firmware: Version | None = None
+
+    @model_validator(mode="after")
+    def require_version_for_firmware(self):
+        if self.firmware and not self.version:
+            raise ValueError("Укажите версию патча")
         return self
 
 
@@ -135,15 +148,18 @@ def patch_view(db, game, target):
         (game["id"], check["last_success"] if check else None, check["source"] if check else None),
     )]
     history.sort(key=lambda row: version_key(row["version"]), reverse=True)
-    manual = next((row for row in history if row["source"] == "Вручную"), None)
-    history = [row for row in history if row["source"] != "Вручную"]
+    manual = next((row for row in history if row["source"] == MANUAL_PATCH_SOURCE), None)
+    history = [row for row in history if row["source"] != MANUAL_PATCH_SOURCE]
     reported = version_key(check["latest_version"]) if check else ()
     latest = next((row for row in history if reported and version_key(row["version"]) == reported), None)
     if not reported and check and check["last_success"]:
         latest = next((row for row in history if row["checked_at"] == check["last_success"]), None)
+    official_version = version_key(latest["version"]) if latest else ()
+    manual_version = version_key(manual["version"]) if manual else ()
+    manual_active = manual_version > official_version
     if latest and target:
         limit = version_key(target)
-        candidates = [row for row in history if version_key(row["version"]) <= version_key(latest["version"])]
+        candidates = [row for row in history if version_key(row["version"]) <= official_version]
         compatible = next((row for row in candidates if version_key(row["firmware"]) and version_key(row["firmware"]) <= limit), None)
         if compatible and any(
             not version_key(row["firmware"]) and version_key(row["version"]) > version_key(compatible["version"])
@@ -152,15 +168,26 @@ def patch_view(db, game, target):
             compatible = None
     else:
         compatible = None
+    if manual_active and target and (firmware := version_key(manual["firmware"])) and firmware <= version_key(target):
+        compatible = manual
+
     state = "unknown"
     local_version = version_key(game["collection_version"])
-    if latest and local_version:
-        state = "current" if local_version >= version_key(latest["version"]) else "available"
-    elif check and check["state"] == "error" and not latest:
+    reference_version = manual_version if manual_active else official_version
+    if reference_version and local_version:
+        state = "current" if local_version >= reference_version else "available"
+    elif not reference_version and check and check["state"] == "error":
         state = "error"
     return {"state": state, "latest": latest, "manual": manual, "compatible": compatible, "history": history,
-            "cached": bool(latest and check["state"] != "ok"), "target": target or None,
+            "manual_active": manual_active, "cached": bool(latest and check["state"] != "ok"), "target": target or None,
             "check": dict(check) if check else None}
+
+
+def set_manual_patch(db, game_id, version, firmware):
+    db.execute("DELETE FROM patch_history WHERE game_id=? AND source=?", (game_id, MANUAL_PATCH_SOURCE))
+    if version:
+        db.execute("INSERT INTO patch_history (game_id,version,firmware,source,checked_at) VALUES (?,?,?,?,?)",
+                   (game_id, version, firmware, MANUAL_PATCH_SOURCE, now()))
 
 
 def ps4_packages(db, title_id):
@@ -298,8 +325,5 @@ def save_game(db, item, game_id=None):
                 (game_id, row["source"], row["interface"], row["subtitles"], row["audio"]) for row in groups
             ])
     if "official_version" in item.model_fields_set:
-        db.execute("DELETE FROM patch_history WHERE game_id=? AND source='Вручную'", (game_id,))
-        if item.official_version:
-            db.execute("INSERT INTO patch_history (game_id,version,firmware,source,checked_at) VALUES (?,?,?,?,?)",
-                       (game_id, item.official_version, item.official_firmware, "Вручную", now()))
+        set_manual_patch(db, game_id, item.official_version, item.official_firmware)
     return library(db, game_id)[0]

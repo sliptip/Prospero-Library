@@ -255,6 +255,72 @@ export function CompatiblePatch({ patch }: { patch: PatchInfo }) {
   return text && <Meta name={'Совместимый патч · ' + patch.target} className="mono">{text}</Meta>
 }
 
+export function ManualPatchDetails({ patch }: { patch: PatchInfo }) {
+  const manual = patch.manual
+  if (!manual) return null
+  return <>
+    <Meta name={patch.manual_active ? 'Версия для сравнения · Вручную' : 'Версия патча · Вручную'} className="mono">
+      {manual.version}
+    </Meta>
+    {manual.firmware && <Meta name="Прошивка патча · Вручную" className="mono" title={manual.firmware}>
+      {patchFirmwareText(manual.firmware)}
+    </Meta>}
+  </>
+}
+
+function ManualPatchDialog({ game, close, saved }: { game: Game; close: () => void; saved: (game: Game) => void }) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const manual = game.patch.manual
+  const pattern = '[0-9]{1,4}([.][0-9]{1,4}){1,3}'
+  const cancel = () => { if (!busy) close() }
+
+  async function save(version: string | null, firmware: string | null) {
+    setBusy(true)
+    setError('')
+    try {
+      const updated = await api<Game>(`/games/${game.id}/manual-patch`, json('PUT', { version, firmware }))
+      saved(updated)
+      close()
+    } catch (failure) {
+      setError((failure as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const data = new FormData(event.currentTarget)
+    void save(String(data.get('version')).trim(), String(data.get('firmware')).trim() || null)
+  }
+
+  return <Dialog title={manual ? 'Изменить ручной патч' : 'Указать патч вручную'} close={cancel}>
+    <form onSubmit={submit}>
+      <div className="dialog-body">
+        <div className="form-grid">
+          <label className="field">Версия патча
+            <input name="version" required pattern={pattern} maxLength={19} defaultValue={manual?.version}
+              placeholder={game.platform === 'PS5' ? '01.002.000' : '01.02'} disabled={busy} />
+          </label>
+          <label className="field">Требуемая прошивка
+            <input name="firmware" pattern={pattern} maxLength={19} defaultValue={manual?.firmware ?? ''}
+              placeholder="Необязательно" disabled={busy} />
+          </label>
+        </div>
+        {error && <p className="error" role="alert">{error}</p>}
+      </div>
+      <div className="dialog-footer manual-patch-footer">
+        {manual && <button type="button" className="text-button" disabled={busy} onClick={() => void save(null, null)}>
+          Удалить ручную запись
+        </button>}
+        <button type="button" className="button outlined" disabled={busy} onClick={cancel}>Отмена</button>
+        <button type="submit" className="button primary" disabled={busy}>{busy ? 'Сохраняю…' : 'Сохранить'}</button>
+      </div>
+    </form>
+  </Dialog>
+}
+
 function PackageFile({ item }: { item: LocalPackage }) {
   return <p className="package-file" title={item.relpath}>
     <span>{item.relpath.split('/').at(-1)}</span>
@@ -285,11 +351,13 @@ function AboutGameDialog({ about, close, retry }: { about: AboutState; close: ()
   </Dialog>
 }
 
-export function GamePage({ game, back, edit, art, updates, updating, removed, onStoreDetails }: {
+export function GamePage({ game, back, edit, art, updates, updating, removed, onStoreDetails, onManualPatch }: {
   game: Game; back: () => void; edit: () => void; art: () => void; updates: () => void; updating: boolean; removed: () => void;
   onStoreDetails: (id: number, contentId: string, details: GameAbout) => void;
+  onManualPatch: (game: Game) => void;
 }) {
   const [remove, setRemove] = useState(false)
+  const [showManualPatch, setShowManualPatch] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [showAbout, setShowAbout] = useState(false)
@@ -401,12 +469,18 @@ export function GamePage({ game, back, edit, art, updates, updating, removed, on
           </Meta>
           <CompatiblePatch patch={game.patch} />
           <Meta name="Источник">{game.patch.latest?.source || game.patch.check?.source}</Meta>
+          <ManualPatchDetails patch={game.patch} />
         </dl>
         {game.patch.cached && <p className="muted note">{patchCacheNote(game.patch)}</p>}
         {game.patch.check?.message && <p className="muted note">{game.patch.check.message}</p>}
-        <a href={patchArchive(game)} target="_blank" rel="noreferrer" className="text-button note">
-          {(game.package_identity?.platform || game.platform) === 'PS5' ? 'ProsperoPatches' : 'OrbisPatches'} <ExternalLink size={13} />
-        </a>
+        <div className="detail-actions">
+          <a href={patchArchive(game)} target="_blank" rel="noreferrer" className="text-button">
+            {(game.package_identity?.platform || game.platform) === 'PS5' ? 'ProsperoPatches' : 'OrbisPatches'} <ExternalLink size={13} />
+          </a>
+          <button className="text-button" aria-haspopup="dialog" onClick={() => setShowManualPatch(true)}>
+            <Pencil size={13} /> {game.patch.manual ? 'Изменить ручной патч' : 'Указать патч вручную'}
+          </button>
+        </div>
       </section>
       {localPatches.length > 0 && <section className="panel span-two">
         <h2>Локальные патчи</h2>
@@ -444,6 +518,7 @@ export function GamePage({ game, back, edit, art, updates, updating, removed, on
     <button className="text-button remove-game" disabled={updating} onClick={() => setRemove(true)}>
       <Trash2 size={15} /> Удалить карточку
     </button>
+    {showManualPatch && <ManualPatchDialog game={game} close={() => setShowManualPatch(false)} saved={onManualPatch} />}
     {remove && <Dialog title="Удалить карточку" close={() => { if (!busy) setRemove(false) }}>
       <div className="dialog-body">
         <p className="notes">{game.title}</p>

@@ -12,7 +12,7 @@ export type Patch = { version: string; firmware: string | null; source: string; 
 export type PatchState = 'unknown' | 'available' | 'current' | 'error'
 export type PatchInfo = {
   state: PatchState; latest: Patch | null; manual: Patch | null; compatible: Patch | null;
-  target: string | null; history: Patch[]; cached: boolean;
+  target: string | null; history: Patch[]; cached: boolean; manual_active: boolean;
   check: { state: string; message: string | null; checked_at: string; last_success: string | null; source: string } | null;
 }
 export type Game = {
@@ -80,7 +80,7 @@ export function patchFirmwareText(firmware?: string | null) {
 }
 
 export function compatiblePatchText(patch: PatchInfo) {
-  if (patch.compatible) return patch.compatible.version
+  if (patch.compatible) return patch.compatible.version + (patch.compatible.source === patch.manual?.source ? ' · Вручную' : '')
   if (patch.target && patch.latest && patch.history.every(item => item.firmware)) {
     return 'Нет в полученном списке'
   }
@@ -89,6 +89,7 @@ export function compatiblePatchText(patch: PatchInfo) {
 
 export function patchCacheNote(patch: PatchInfo) {
   if (!patch.cached) return null
+  if (patch.manual_active) return 'Официальные сведения сохранены с предыдущей проверки'
   return patch.check?.last_success
     ? 'По данным проверки от ' + dateText(patch.check.last_success)
     : 'По сохранённым данным'

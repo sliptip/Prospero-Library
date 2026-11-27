@@ -310,6 +310,7 @@ kbd { color: #aba8a4; flex-shrink: 0; background: #292a2c; border: 1px solid #42
 .dialog-header { border-bottom: 1px solid #3a373a; justify-content: space-between; }
 .dialog-header h2 { font-size: 20px; font-weight: 810; letter-spacing: -.04em; }
 .dialog-footer { border-top: 1px solid #3a373a; justify-content: end; }
+.manual-patch-footer { flex-wrap: wrap; }
 .journal-actions { flex-wrap: wrap; }
 .journal-text {
   display: block; width: 100%; min-height: 12rem; height: min(47dvh, 27rem); resize: vertical;
