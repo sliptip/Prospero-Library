@@ -6,66 +6,15 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: release-main
   cancel-in-progress: false
 
 jobs:
-  source:
+  release:
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04
-    outputs:
-      version: ${{ steps.release.outputs.version }}
-      publish: ${{ steps.release.outputs.publish }}
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
-      - name: Check version
-        id: release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          version=$(python -c 'from backend import __version__; print(__version__)')
-          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          if gh release view "v$version" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "publish=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "publish=true" >> "$GITHUB_OUTPUT"
-          fi
-      - uses: actions/setup-node@v6
-        if: steps.release.outputs.publish == 'true'
-        with:
-          node-version: '24'
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - name: Build frontend
-        if: steps.release.outputs.publish == 'true'
-        run: |
-          npm --prefix frontend ci
-          npm --prefix frontend run build
-      - name: Test and package
-        if: steps.release.outputs.publish == 'true'
-        run: |
-          python -m pip install -r requirements.txt
-          python -m unittest discover -s tests -v
-          python scripts/package_release.py
-      - uses: actions/upload-artifact@v7
-        if: steps.release.outputs.publish == 'true'
-        with:
-          name: source
-          path: release/
-          if-no-files-found: error
-
-  windows:
-    needs: source
-    if: needs.source.outputs.publish == 'true'
     runs-on: windows-2025
     steps:
       - uses: actions/checkout@v6
@@ -75,18 +24,41 @@ jobs:
         with:
           python-version: '3.12'
           architecture: x64
+      - name: Check version
+        id: release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = python -c 'from backend import __version__; print(__version__)'
+          if ($LASTEXITCODE -ne 0 -or $version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Invalid version' }
+          gh release view "v$version" --repo $env:GITHUB_REPOSITORY *> $null
+          $publish = if ($LASTEXITCODE -eq 0) { 'false' } else { 'true' }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "publish=$publish" >> $env:GITHUB_OUTPUT
+          exit 0
       - uses: actions/setup-node@v6
+        if: steps.release.outputs.publish == 'true'
         with:
           node-version: '24'
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - name: Build Windows tray application
+        if: steps.release.outputs.publish == 'true'
         shell: pwsh
         run: ./scripts/build-windows.ps1
+      - name: Test and package source ZIP
+        if: steps.release.outputs.publish == 'true'
+        shell: pwsh
+        run: |
+          & ./.venv/Scripts/python.exe -m unittest discover -s tests -v
+          if ($LASTEXITCODE -ne 0) { throw 'Tests failed' }
+          & ./.venv/Scripts/python.exe scripts/package_release.py
       - name: Verify the packaged app
+        if: steps.release.outputs.publish == 'true'
         shell: pwsh
         env:
-          VERSION: ${{ needs.source.outputs.version }}
+          VERSION: ${{ steps.release.outputs.version }}
         run: |
           $testRoot = Join-Path $env:RUNNER_TEMP "Prospero Smoke"
           New-Item -ItemType Directory -Path $testRoot | Out-Null
@@ -136,33 +108,14 @@ jobs:
           }
           $name = "Prospero-Library-${env:VERSION}-Windows-x64.exe"
           Copy-Item './dist/Prospero Library.exe' "./dist/$name"
-      - uses: actions/upload-artifact@v7
-        with:
-          name: windows
-          path: dist/Prospero-Library-*-Windows-x64.exe
-          if-no-files-found: error
-
-  publish:
-    needs: [source, windows]
-    if: needs.source.outputs.publish == 'true'
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v8
-        with:
-          name: source
-          path: release
-      - uses: actions/download-artifact@v8
-        with:
-          name: windows
-          path: release
       - name: Publish GitHub release
+        if: steps.release.outputs.publish == 'true'
+        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ needs.source.outputs.version }}
+          VERSION: ${{ steps.release.outputs.version }}
         run: |
-          gh release create "v$VERSION" "release/Prospero-Library-$VERSION.zip" \
-            "release/Prospero-Library-$VERSION-Windows-x64.exe" \
-            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "Prospero Library $VERSION" --notes-file release/release-notes.md
+          $version = $env:VERSION
+          gh release create "v$version" "release/Prospero-Library-$version.zip" "dist/Prospero-Library-$version-Windows-x64.exe" `
+            --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA `
+            --title "Prospero Library $version" --notes-file release/release-notes.md
