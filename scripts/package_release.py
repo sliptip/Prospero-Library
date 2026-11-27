@@ -1,5 +1,6 @@
 """Package the committed source and the built frontend for GitHub Releases."""
 import argparse
+import io
 import re
 import runpy
 import subprocess
@@ -22,13 +23,16 @@ def main():
         parser.error("Build the frontend with npm --prefix frontend run build")
     output.mkdir(parents=True, exist_ok=True)
     artifact = output / f"Prospero-Library-{version}.zip"
-    subprocess.run([
-        "git", "archive", "--format=zip", "--prefix=Prospero-Library/", f"--output={artifact}", "HEAD",
-    ], cwd=ROOT, check=True)
-    with ZipFile(artifact, "a", compression=ZIP_DEFLATED) as archive:
+    source = subprocess.check_output([
+        "git", "archive", "--format=zip", "--prefix=Prospero-Library/", "HEAD",
+    ], cwd=ROOT)
+    with ZipFile(io.BytesIO(source)) as tracked, ZipFile(artifact, "w", compression=ZIP_DEFLATED) as archive:
+        for entry in tracked.infolist():
+            archive.writestr(entry, tracked.read(entry))
         for file in sorted(frontend.rglob("*")):
             if file.is_file():
                 archive.write(file, "Prospero-Library/" + file.relative_to(ROOT).as_posix())
+    with ZipFile(artifact) as archive:
         if bad_entry := archive.testzip():
             raise RuntimeError(f"Archive verification failed for {bad_entry}")
 
