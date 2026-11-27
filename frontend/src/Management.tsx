@@ -86,6 +86,53 @@ function RootForm({ root, close, save }: { root: Root | null; close: () => void;
   </Dialog>
 }
 
+type ArtworkProvider = 'IGDB' | 'SteamGridDB'
+
+function ArtworkKeysDialog({ provider, close, save }: {
+  provider: ArtworkProvider; close: () => void; save: (keys: Record<string, string>) => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const keys = Object.fromEntries([...new FormData(event.currentTarget).entries()]
+      .map(([key, value]) => [key, String(value).trim()]).filter(([, value]) => value))
+    if (!Object.keys(keys).length) {
+      setError('Введи хотя бы одно значение.')
+      return
+    }
+    setBusy(true)
+    setError('')
+    try { await save(keys) }
+    catch (failure) {
+      setError((failure as Error).message)
+      setBusy(false)
+    }
+  }
+  return <Dialog title={'Настройки ' + provider} close={busy ? () => {} : close}>
+    <form onSubmit={submit} autoComplete="off">
+      <div className="dialog-body form-grid">
+        {provider === 'IGDB' ? <>
+          <p className="muted span-two">Для доступа укажи Client ID, а также Client Secret или Access Token.</p>
+          <label className="field span-two">Client ID<input name="IGDB_CLIENT_ID" maxLength={2048} /></label>
+          <label className="field span-two">Client Secret<input type="password" name="IGDB_CLIENT_SECRET" autoComplete="new-password" maxLength={2048} /></label>
+          <label className="field span-two">Access Token<input type="password" name="IGDB_ACCESS_TOKEN" autoComplete="new-password" maxLength={2048} /></label>
+        </> : <label className="field span-two">Ключ SteamGridDB
+          <input type="password" name="STEAMGRIDDB_API_KEY" autoComplete="new-password" maxLength={2048} />
+        </label>}
+        <p className="muted span-two">{provider === 'IGDB'
+          ? 'Пустые поля сохраняют прежние значения. При вводе нового Client Secret пустое поле Access Token сбрасывает старый токен.'
+          : 'Чтобы заменить сохранённый ключ, введи новый.'}</p>
+        {error && <p className="error span-two" role="alert">{error}</p>}
+      </div>
+      <div className="dialog-footer">
+        <button type="button" className="button outlined" onClick={close} disabled={busy}>Отмена</button>
+        <button className="button primary" disabled={busy}>Сохранить</button>
+      </div>
+    </form>
+  </Dialog>
+}
+
 export function SettingsPage({ refresh, setHideRecent, scan, running, openJournal }: {
   refresh: () => Promise<void>; setHideRecent: (value: boolean) => void;
   scan: (force?: boolean) => void; running: boolean; openJournal: () => void;
@@ -94,6 +141,9 @@ export function SettingsPage({ refresh, setHideRecent, scan, running, openJourna
   const [backups, setBackups] = useState<string[]>([])
   const [rootForm, setRootForm] = useState<Root | null | false>(false)
   const [restore, setRestore] = useState('')
+  const [deleteBackup, setDeleteBackup] = useState('')
+  const [backupError, setBackupError] = useState('')
+  const [artworkProvider, setArtworkProvider] = useState<ArtworkProvider | null>(null)
   const [remove, setRemove] = useState<Root | null>(null)
   const [notice, setNotice] = useState('')
   const [error, setError] = useState('')
@@ -108,12 +158,12 @@ export function SettingsPage({ refresh, setHideRecent, scan, running, openJourna
   useEffect(() => {
     if (!running) void api<Settings>('/settings').then(setSettings).catch(() => {})
   }, [running])
-  async function action(callback: () => Promise<void>) {
+  async function action(callback: () => Promise<void>, reportError = setError) {
     setBusy(true)
     setNotice('')
     setError('')
     try { await callback() }
-    catch (failure) { setError((failure as Error).message) }
+    catch (failure) { reportError((failure as Error).message) }
     finally { setBusy(false) }
   }
   function update<K extends keyof Settings>(key: K, value: Settings[K]) {
@@ -127,22 +177,6 @@ export function SettingsPage({ refresh, setHideRecent, scan, running, openJourna
       setSettings(await api<Settings>('/settings', json('PUT', body)))
       await refresh()
       setNotice('Настройки сохранены')
-    })
-  }
-  function saveArtworkKeys(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    const form = event.currentTarget
-    const keys = Object.fromEntries([...new FormData(form).entries()].map(([key, value]) => [key, String(value).trim()])
-      .filter(([, value]) => value))
-    void action(async () => {
-      if (!Object.keys(keys).length) {
-        setNotice('Введи хотя бы один ключ')
-        return
-      }
-      const { providers } = await api<Pick<Settings, 'providers'>>('/settings/artwork', json('PATCH', keys))
-      setSettings(current => current && { ...current, providers })
-      form.reset()
-      setNotice('Ключи сохранены')
     })
   }
   return <>
@@ -215,16 +249,16 @@ export function SettingsPage({ refresh, setHideRecent, scan, running, openJourna
       <section className="panel">
         <h2>Источники оформления</h2>
         <ul className="provider-list">{Object.entries(settings.providers).map(([name, available]) => <li key={name}>
-          <span>{name}</span><small className={available ? 'positive' : 'muted'}>{available ? 'Настроен' : 'Ключ не задан'}</small>
+          <span>{name}</span>
+          <span className="provider-actions">
+            <small className={available ? 'positive' : 'muted'}>{available ? 'Настроен' : 'Ключ не задан'}</small>
+            {(name === 'IGDB' || name === 'SteamGridDB') && <button type="button" className="text-button"
+              disabled={busy} aria-label={(available ? 'Изменить' : 'Задать') + ' ключ ' + name}
+              onClick={() => { setNotice(''); setArtworkProvider(name) }}>
+              {available ? 'Изменить' : 'Задать'}
+            </button>}
+          </span>
         </li>)}</ul>
-        <p className="muted note">Для IGDB укажи Client ID и один из двух реквизитов — Client Secret или Access Token. Пустые поля сохраняют прежние значения.</p>
-        <form className="form-grid" onSubmit={saveArtworkKeys} autoComplete="off">
-          <label className="field">IGDB Client ID<input type="text" name="IGDB_CLIENT_ID" maxLength={2048} /></label>
-          <label className="field">IGDB Client Secret<input type="password" name="IGDB_CLIENT_SECRET" autoComplete="new-password" maxLength={2048} /></label>
-          <label className="field">IGDB Access Token<input type="password" name="IGDB_ACCESS_TOKEN" autoComplete="new-password" maxLength={2048} /></label>
-          <label className="field">Ключ SteamGridDB<input type="password" name="STEAMGRIDDB_API_KEY" autoComplete="new-password" maxLength={2048} /></label>
-          <div className="button-row journal-actions span-two"><button className="button primary" disabled={busy}>Сохранить ключи</button></div>
-        </form>
       </section>
       <section className="panel">
         <div className="section-heading"><h2>Резервные копии</h2>
@@ -238,6 +272,8 @@ export function SettingsPage({ refresh, setHideRecent, scan, running, openJourna
             <History size={17} /><span>{name}</span>
             <a className="icon-button" href={'/api/backups/' + name} download title="Скачать архив" aria-label={'Скачать ' + name}><Download size={17} /></a>
             <button className="text-button" disabled={busy || running} onClick={() => setRestore(name)}>Восстановить</button>
+            <button type="button" className="icon-button" disabled={busy} title="Удалить резервную копию"
+              aria-label={'Удалить ' + name} onClick={() => { setBackupError(''); setDeleteBackup(name) }}><Trash2 size={17} /></button>
           </li>)}
         </ul>}
       </section>
@@ -249,6 +285,12 @@ export function SettingsPage({ refresh, setHideRecent, scan, running, openJourna
         <p className="muted">Результаты сканирования, проверки обновлений и ошибки приложения.</p>
       </section>
     </div>}
+    {artworkProvider && <ArtworkKeysDialog provider={artworkProvider} close={() => setArtworkProvider(null)} save={async keys => {
+      const { providers } = await api<Pick<Settings, 'providers'>>('/settings/artwork', json('PATCH', keys))
+      setSettings(current => current && { ...current, providers })
+      setArtworkProvider(null)
+      setNotice('Ключи сохранены')
+    }} />}
     {rootForm !== false && <RootForm root={rootForm} close={() => setRootForm(false)} save={async () => {
       await load()
       await refresh()
@@ -274,6 +316,25 @@ export function SettingsPage({ refresh, setHideRecent, scan, running, openJourna
           await refresh()
           setNotice('Библиотека восстановлена')
         })}>Восстановить</button></div>
+    </Dialog>}
+    {deleteBackup && <Dialog title="Удалить резервную копию" close={busy ? () => {} : () => setDeleteBackup('')}>
+      <div className="dialog-body">
+        <p className="muted">Этот архив будет удалён с диска.</p>
+        <p className="notes">{deleteBackup}</p>
+        {backupError && <p className="error" role="alert">{backupError}</p>}
+      </div>
+      <div className="dialog-footer">
+        <button className="button outlined" disabled={busy} onClick={() => setDeleteBackup('')}>Отмена</button>
+        <button className="button primary" disabled={busy} onClick={() => {
+          setBackupError('')
+          void action(async () => {
+            await api('/backups/' + encodeURIComponent(deleteBackup), { method: 'DELETE' })
+            setBackups(items => items.filter(name => name !== deleteBackup))
+            setDeleteBackup('')
+            setNotice('Резервная копия удалена')
+          }, setBackupError)
+        }}>Удалить</button>
+      </div>
     </Dialog>}
   </>
 }

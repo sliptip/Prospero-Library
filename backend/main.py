@@ -16,7 +16,7 @@ from zipfile import BadZipFile
 import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
@@ -601,13 +601,25 @@ def create_app(data_directory=None, frontend_directory=None, app_updater=None):
     def backup_download(name: str):
         return FileResponse(ready_backup(name), media_type="application/zip", filename=name)
 
+    @app.delete("/api/backups/{name}", status_code=204)
+    def backup_delete(name: str):
+        try:
+            with database.lock:
+                ready_backup(name).unlink()
+        except FileNotFoundError as error:
+            raise HTTPException(404, "Копия не найдена") from error
+        except OSError as error:
+            raise HTTPException(409, "Не удалось удалить архив. Проверь, доступен ли файл для удаления.") from error
+        return Response(status_code=204)
+
     @app.post("/api/backups/restore")
     def backup_restore(item: BackupInput):
         with jobs.lock:
             if jobs.active:
                 raise HTTPException(409, "Дождитесь завершения текущей операции")
             try:
-                result = restore_backup(database, ready_backup(item.name))
+                with database.lock:
+                    result = restore_backup(database, ready_backup(item.name))
                 return {"protective_backup": result.name}
             except (ValueError, BadZipFile) as error:
                 raise HTTPException(422, str(error)) from error

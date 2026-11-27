@@ -296,6 +296,7 @@ kbd { color: #aba8a4; flex-shrink: 0; background: #292a2c; border: 1px solid #42
 .roots-list li small { color: var(--muted); }
 .roots-list li svg { flex-shrink: 0; color: var(--muted); }
 .provider-list li { justify-content: space-between; }
+.provider-actions { display: flex; align-items: center; gap: 12px; }
 .cli-output { white-space: pre-wrap; margin-top: 13px; font-size: 12px; }
 .cli-local { margin-bottom: 12px; }
 

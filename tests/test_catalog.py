@@ -990,6 +990,25 @@ class LocalCatalogTest(unittest.TestCase):
         self.assertEqual(self.initial()["cover"], url)
         self.assertEqual(len(self.client.get("/api/backups").json()), 2)
 
+    def test_delete_only_the_selected_backup_archive(self):
+        game = self.initial()
+        first = self.client.post("/api/backups").json()["name"]
+        second = self.client.post("/api/backups").json()["name"]
+        backup_dir = self.data / "backups"
+        other = backup_dir / "unrelated.zip"
+        other.write_bytes(b"unrelated file")
+        url = "/api/backups/" + first
+        self.assertEqual(self.client.delete(url, headers={"Origin": "http://another.example"}).status_code, 403)
+        self.assertTrue((backup_dir / first).is_file())
+        self.assertEqual(self.client.delete("/api/backups/unrelated.zip").status_code, 404)
+        self.assertEqual(other.read_bytes(), b"unrelated file")
+        self.assertEqual(self.client.delete(url).status_code, 204)
+        self.assertFalse((backup_dir / first).exists())
+        self.assertEqual(self.client.delete(url).status_code, 404)
+        self.assertEqual(self.client.get("/api/backups").json(), [second])
+        self.assertEqual(self.client.get("/api/backups/" + second).status_code, 200)
+        self.assertEqual(self.initial(), game)
+
     def test_scan_import_relink_offline_and_preserve_edits(self):
         folder = self.root / "Коллекция"
         folder.mkdir()
