@@ -15,7 +15,7 @@ from zipfile import BadZipFile
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -80,6 +80,7 @@ def create_app(data_directory=None, frontend_directory=None, app_updater=None):
     artwork = Artwork(database=database)
     candidates = {}
     update_lock = Lock()
+    update_progress = None
     log_path = database.directory / "logs" / "prospero.log"
     front = Path(frontend_directory or os.getenv("PROSPERO_FRONTEND") or BASE / "frontend" / "dist")
     extra_hosts = os.getenv("PROSPERO_ALLOWED_HOSTS", "").split(",")
@@ -160,17 +161,23 @@ def create_app(data_directory=None, frontend_directory=None, app_updater=None):
         return {"app": "prospero-library", "version": app.version, "app_update": can_update(request)}
 
     @app.post("/api/app-update")
-    def app_update(request: Request):
+    def app_update(request: Request, operation: str | None = Query(default=None, max_length=64)):
+        nonlocal update_progress
         if not can_update(request):
             raise HTTPException(403, "Обновление приложения доступно при локальном запуске из трея.")
         if not update_lock.acquire(blocking=False):
             raise HTTPException(409, "Обновление Prospero уже проверяется.")
         prepared = None
+
+        def report_download(version, received, total):
+            nonlocal update_progress
+            update_progress = (operation, {"version": version, "received": received, "total": total})
+
         try:
             with jobs.lock:
                 if jobs.active or jobs.closed:
                     raise HTTPException(409, "Дождись завершения текущей операции.")
-            prepared = app_updater.prepare(app.version)
+            prepared = app_updater.prepare(app.version, report_download)
             if prepared is None:
                 return {"version": app.version, "restart": False}
             with jobs.lock:
@@ -189,7 +196,15 @@ def create_app(data_directory=None, frontend_directory=None, app_updater=None):
         finally:
             if prepared is not None:
                 shutil.rmtree(prepared[1], ignore_errors=True)
+            update_progress = None
             update_lock.release()
+
+    @app.get("/api/app-update")
+    def app_update_status(request: Request, operation: str = Query(max_length=64)):
+        if not can_update(request):
+            raise HTTPException(403, "Обновление приложения доступно при локальном запуске из трея.")
+        progress = update_progress
+        return progress[1] if progress and progress[0] == operation else None
 
     @app.get("/api/logs")
     def diagnostic_log(download: bool = False):

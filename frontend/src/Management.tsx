@@ -3,7 +3,7 @@ import type { FormEvent } from 'react'
 import { Clipboard, Download, FileText, Folder, History, Plus, RefreshCw, RotateCcw, ScanLine, Trash2, X } from 'lucide-react'
 import { CompatiblePatch, Dialog } from './Game'
 import { Cover } from './Library'
-import { api, dateText, json, patchFirmwareText, patchLabel, unknown } from './model'
+import { api, dateText, json, patchCacheNote, patchFirmwareText, patchLabel, unknown } from './model'
 import type { Game, Job, Root, Settings } from './model'
 
 export function Updates({ games, open, start, busy }: {
@@ -31,6 +31,7 @@ export function Updates({ games, open, start, busy }: {
             {patchFirmwareText(game.patch.latest?.firmware)}</dd></div>
           <CompatiblePatch patch={game.patch} />
         </dl>
+        {game.patch.cached && <p className="muted note">{patchCacheNote(game.patch)}</p>}
         {game.patch.check?.message && <p className="muted note">{game.patch.check.message}</p>}
         <div className="section-heading update-footer">
           <span className="muted"> {game.patch.check?.checked_at ?

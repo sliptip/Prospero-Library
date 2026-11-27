@@ -4,7 +4,7 @@ import { ArtworkDialog, GameEditor, GamePage } from './Game'
 import { Library } from './Library'
 import { JobDialog, JournalDialog, SettingsPage, Updates } from './Management'
 import { api, json } from './model'
-import type { Game, Job, Settings, StoreLocalization } from './model'
+import type { Game, GameAbout, Job, Settings } from './model'
 
 function active(job: Job | null) {
   return job?.status === 'running' || job?.status === 'cancelling'
@@ -16,13 +16,14 @@ const navigation = [
 ]
 
 type AppHealth = { version: string; app_update: boolean }
+type DownloadProgress = { version: string; received: number; total: number }
 
 export function App() {
   const [route, setRoute] = useState(window.location.pathname)
   const [games, setGames] = useState<Game[]>([])
   const [ready, setReady] = useState(false)
   const [health, setHealth] = useState<AppHealth | null>(null)
-  const [appUpdate, setAppUpdate] = useState<'checking' | 'restarting' | null>(null)
+  const [appUpdate, setAppUpdate] = useState<'checking' | 'restarting' | DownloadProgress | null>(null)
   const [hideRecent, setHideRecent] = useState(false)
   const [query, setQuery] = useState('')
   const [job, setJob] = useState<Job | null>(null)
@@ -41,9 +42,10 @@ export function App() {
     if (settings) setHideRecent(settings.hide_recent)
     setReady(true)
   }, [])
-  const saveLocalization = useCallback((id: number, contentId: string, localization: StoreLocalization) => {
+  const saveStoreDetails = useCallback((id: number, contentId: string, details: GameAbout) => {
     setGames(items => items.map(game => game.id === id && game.content_id === contentId
-      ? { ...game, official_localization: localization } : game))
+      ? { ...game, store_release_date: details.release_date,
+        official_localization: details.localization ?? game.official_localization } : game))
   }, [])
 
   const navigate = useCallback((path: string, clear = false) => {
@@ -121,8 +123,27 @@ export function App() {
     setError('')
     setNotice('')
     setAppUpdate('checking')
+    const path = '/app-update?operation=' + crypto.randomUUID()
+    const controller = new AbortController()
+    let polling = false
+    const timer = window.setInterval(async () => {
+      if (polling) return
+      polling = true
+      try {
+        const progress = await api<DownloadProgress | null>(path, {
+          signal: AbortSignal.any([controller.signal, AbortSignal.timeout(3000)]),
+        })
+        if (progress && !controller.signal.aborted) setAppUpdate(progress)
+      } catch {
+        // The POST request reports download failures.
+      } finally {
+        polling = false
+      }
+    }, 450)
     try {
-      const result = await api<{ version: string; restart: boolean }>('/app-update', { method: 'POST' })
+      const result = await api<{ version: string; restart: boolean }>(path, { method: 'POST' })
+      controller.abort()
+      clearInterval(timer)
       if (!result.restart) {
         setNotice('Установлена последняя версия Prospero')
         return
@@ -141,6 +162,8 @@ export function App() {
     } catch (failure) {
       showError(failure)
     } finally {
+      controller.abort()
+      clearInterval(timer)
       setAppUpdate(null)
     }
   }
@@ -213,7 +236,7 @@ export function App() {
         {ready && home && <Library games={games} hideRecent={hideRecent} query={query}
           open={game => showGame(game.id)} add={() => setMode('new')} swap={swapGames} />}
         {ready && current && <GamePage key={current.id} game={current} back={() => navigate('/')} edit={() => setMode('edit')}
-          onLocalization={saveLocalization}
+          onStoreDetails={saveStoreDetails}
           art={() => setMode('art')} updating={updating} updates={() => void start('/updates?game_id=' + current.id)}
           removed={() => { setGames(items => items.filter(game => game.id !== current.id)); navigate('/', true); setNotice('Карточка удалена') }} />}
         {ready && detail && !current && <div className="empty-state"><Gamepad2 size={28} /><p>Карточка не найдена</p>
@@ -225,7 +248,8 @@ export function App() {
       </main>
     </div>
     {(appUpdate || notice) && <div className="toast" role="status">
-      {appUpdate === 'checking' ? 'Проверяю обновление Prospero…' : appUpdate === 'restarting' ? 'Перезапускаю Prospero…' : notice}
+      {appUpdate === 'checking' ? 'Проверяю обновление Prospero…' : appUpdate === 'restarting' ? 'Перезапускаю Prospero…'
+        : appUpdate ? 'Скачиваю версию ' + appUpdate.version + '… ' + Math.floor(appUpdate.received * 100 / appUpdate.total) + '%' : notice}
     </div>}
     {mode === 'new' && <GameEditor close={() => setMode(null)} save={saveGame} />}
     {mode === 'edit' && current && <GameEditor game={current} close={() => setMode(null)} save={saveGame} />}

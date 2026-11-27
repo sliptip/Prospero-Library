@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { ArrowDownUp, ArrowRight, ChevronDown, CircleArrowUp, CircleCheck, Gamepad2, Grid2X2, GripVertical, LibraryBig, List, Plus, SlidersHorizontal, X } from 'lucide-react'
-import { Game, PatchState, availableDlcCount, gameCount, patchLabel, russianSupport, sizeText, stored } from './model'
+import { Game, PatchInfo, availableDlcCount, gameCount, patchCacheNote, patchLabel, russianSupport, sizeText, stored } from './model'
 
 type Props = { games: Game[]; hideRecent: boolean; query: string; open: (game: Game) => void; add: () => void; swap: (source: number, target: number) => Promise<void> }
 type Sort = 'added_at' | 'title' | 'release_date' | 'size_bytes' | 'update' | 'manual'
@@ -19,10 +19,12 @@ function matchText(value: string) {
   return value.normalize('NFKC').toLocaleLowerCase('ru').replaceAll('ё', 'е')
 }
 
-function CollectionPatchStatus({ state }: { state: PatchState }) {
+function CollectionPatchStatus({ patch }: { patch: PatchInfo }) {
+  const { state } = patch
   if (state !== 'current' && state !== 'available') return null
   const Icon = state === 'current' ? CircleCheck : CircleArrowUp
-  return <span className={'collection-patch-status ' + state} role="img" aria-label={patchLabel[state]} title={patchLabel[state]}>
+  const tooltip = [patchLabel[state], patchCacheNote(patch)].filter(Boolean).join(' · ')
+  return <span className={'collection-patch-status ' + state} role="img" aria-label={patchLabel[state]} title={tooltip}>
     <Icon size={13} aria-hidden="true" />
   </span>
 }
@@ -72,6 +74,12 @@ export function Library({ games, hideRecent, query, open, add, swap }: Props) {
     const { ruText, ruAudio } = russianSupport(game.official_localization, game.custom_localizations, game.ru_text, game.ru_audio)
     return (!filters.ru_text || ruText) && (!filters.ru_audio || ruAudio)
   }
+  function sortValue(game: Game) {
+    if (sort === 'release_date') return game.release_date || game.store_release_date
+    if (sort === 'update') return game.patch.state === 'available' ? 1 : game.patch.state === 'current' ? 0 : null
+    if (sort === 'manual') return null
+    return game[sort]
+  }
   const filtered = games.filter(game => (
     (!search || matchText(game.title + ' ' + game.title_id).includes(search)) &&
     (platform === 'all' || game.platform === platform) &&
@@ -80,8 +88,8 @@ export function Library({ games, hideRecent, query, open, add, swap }: Props) {
     (!filters.update || game.patch.state === 'available')
   )).sort((a, b) => {
     if (sort === 'manual') return 0
-    const lhs = sort === 'update' ? (a.patch.state === 'available' ? 1 : a.patch.state === 'current' ? 0 : null) : a[sort]
-    const rhs = sort === 'update' ? (b.patch.state === 'available' ? 1 : b.patch.state === 'current' ? 0 : null) : b[sort]
+    const lhs = sortValue(a)
+    const rhs = sortValue(b)
     if (lhs == null || rhs == null) return (lhs == null ? 1 : 0) - (rhs == null ? 1 : 0) || collator.compare(a.title, b.title)
     const result = typeof lhs === 'number' && typeof rhs === 'number' ? lhs - rhs : collator.compare(String(lhs), String(rhs))
     return result * (asc ? 1 : -1) || collator.compare(a.title, b.title)
@@ -186,9 +194,9 @@ export function Library({ games, hideRecent, query, open, add, swap }: Props) {
               {mode === 'grid' && <span className="platform tile-platform">{game.platform}</span>}
             </div>
             <div className="tile-text">
-              <strong>{game.title}{mode === 'list' && <CollectionPatchStatus state={game.patch.state} />}</strong>
+              <strong>{game.title}{mode === 'list' && <CollectionPatchStatus patch={game.patch} />}</strong>
               {mode === 'list' ? <span>{game.edition || game.title_id}</span> : <span className="tile-meta">
-                <span>{game.collection_version || '—'}<CollectionPatchStatus state={game.patch.state} /></span>
+                <span>{game.collection_version || '—'}<CollectionPatchStatus patch={game.patch} /></span>
                 {dlcCount > 0 && <span>{dlcCount} DLC</span>}</span>}
             </div>
             {mode === 'list' && <><span className="platform">{game.platform}</span><span className="mono row-version">{game.collection_version || '—'}</span>

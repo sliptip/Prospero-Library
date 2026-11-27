@@ -1,9 +1,11 @@
 import hashlib
 import sqlite3
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event
 from unittest.mock import Mock, patch
 
 import httpx
@@ -39,7 +41,9 @@ class SelfUpdateTest(unittest.TestCase):
             release = latest_release(client, "1.2.9")
             self.assertEqual(release, Release(VERSION, DOWNLOAD, len(EXE), DIGEST))
             self.assertIsNone(latest_release(client, VERSION))
-            download_release(client, release, destination)
+            seen = []
+            download_release(client, release, destination, seen.append)
+            self.assertEqual(seen[-1], len(EXE))
             self.assertEqual(destination.read_bytes(), EXE)
             destination.unlink()
             with self.assertRaisesRegex(UpdateError, "SHA-256"):
@@ -80,6 +84,35 @@ class SelfUpdateTest(unittest.TestCase):
             with TestClient(app, base_url="http://localhost", client=("192.0.2.5", 12345)) as client:
                 self.assertFalse(client.get("/api/health").json()["app_update"])
                 self.assertEqual(client.post("/api/app-update").status_code, 403)
+
+    def test_download_progress_is_scoped_and_cleared_after_failure(self):
+        started, finish = Event(), Event()
+
+        def interrupted_download(current, progress):
+            progress(VERSION, 10, 20)
+            started.set()
+            if not finish.wait(5):
+                raise AssertionError("Timed out while simulating a download")
+            raise UpdateError("Скачивание прервано")
+
+        updater = Mock()
+        updater.prepare.side_effect = interrupted_download
+        with TemporaryDirectory() as directory:
+            app = create_app(Path(directory), app_updater=updater)
+            with TestClient(app, base_url="http://localhost", client=("127.0.0.1", 12345)) as client, \
+                    ThreadPoolExecutor(max_workers=1) as pool:
+                path = "/api/app-update?operation=download"
+                pending = pool.submit(client.post, path)
+                try:
+                    self.assertTrue(started.wait(5))
+                    self.assertEqual(client.get(path).json(), {"version": VERSION, "received": 10, "total": 20})
+                    self.assertIsNone(client.get("/api/app-update?operation=other").json())
+                    self.assertEqual(client.post(path).status_code, 409)
+                finally:
+                    finish.set()
+                self.assertEqual(pending.result(timeout=5).status_code, 502)
+                self.assertIsNone(client.get(path).json())
+                updater.launch.assert_not_called()
 
     def test_replacement_restarts_and_reverts_exe_and_database_on_failure(self):
         for successful in (True, False):

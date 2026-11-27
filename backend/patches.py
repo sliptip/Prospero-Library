@@ -224,7 +224,7 @@ def save_check(db, game_id, state, stamp, message, latest, rows=(), *, source=SO
         """INSERT INTO checks VALUES (?,?,?,?,?,?,?) ON CONFLICT(game_id) DO UPDATE SET state=excluded.state,
              source=excluded.source, checked_at=excluded.checked_at,
              last_success=COALESCE(excluded.last_success,checks.last_success), message=excluded.message,
-             latest_version=CASE WHEN excluded.state='error' THEN checks.latest_version ELSE excluded.latest_version END""",
+             latest_version=COALESCE(excluded.latest_version,checks.latest_version)""",
         (game_id, state, source, stamp, stamp if state == "ok" else None, message, latest),
     )
 

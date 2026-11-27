@@ -34,7 +34,7 @@ class TrayUpdater:
         self.port = port
         self.shutdown = shutdown
 
-    def prepare(self, current):
+    def prepare(self, current, progress):
         # GitHub serves the same public asset to the browser and the app.
         with httpx.Client(timeout=httpx.Timeout(30, connect=8), follow_redirects=False) as client:
             release = latest_release(client, current)
@@ -42,7 +42,9 @@ class TrayUpdater:
                 return None
             staged = Path(tempfile.mkdtemp(prefix=STAGING_PREFIX, dir=self.target.parent))
             try:
-                download_release(client, release, staged / "pending.exe")
+                progress(release.version, 0, release.size)
+                download_release(client, release, staged / "pending.exe",
+                                 lambda received: progress(release.version, received, release.size))
             except Exception:
                 shutil.rmtree(staged, ignore_errors=True)
                 raise

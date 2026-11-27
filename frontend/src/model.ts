@@ -12,12 +12,13 @@ export type Patch = { version: string; firmware: string | null; source: string; 
 export type PatchState = 'unknown' | 'available' | 'current' | 'error'
 export type PatchInfo = {
   state: PatchState; latest: Patch | null; manual: Patch | null; compatible: Patch | null;
-  target: string | null; history: Patch[];
+  target: string | null; history: Patch[]; cached: boolean;
   check: { state: string; message: string | null; checked_at: string; last_success: string | null; source: string } | null;
 }
 export type Game = {
   id: number; title: string; platform: Platform; title_id: string; edition: string | null;
-  version: string | null; collection_version: string | null; firmware: string | null; size_bytes: number | null; release_date: string | null;
+  version: string | null; collection_version: string | null; firmware: string | null; size_bytes: number | null;
+  release_date: string | null; store_release_date: string | null;
   added_at: string; ru_text: boolean | null; ru_audio: boolean | null;
   text_languages: string | null; audio_languages: string | null; localization_source: string | null;
   official_localization: StoreLocalization | null; custom_localizations: CustomLocalization[];
@@ -80,10 +81,17 @@ export function patchFirmwareText(firmware?: string | null) {
 
 export function compatiblePatchText(patch: PatchInfo) {
   if (patch.compatible) return patch.compatible.version
-  if (patch.target && patch.check?.state === 'ok' && patch.latest && patch.history.every(item => item.firmware)) {
+  if (patch.target && patch.latest && patch.history.every(item => item.firmware)) {
     return 'Нет в полученном списке'
   }
   return null
+}
+
+export function patchCacheNote(patch: PatchInfo) {
+  if (!patch.cached) return null
+  return patch.check?.last_success
+    ? 'По данным проверки от ' + dateText(patch.check.last_success)
+    : 'По сохранённым данным'
 }
 
 export function gameCount(count: number) {

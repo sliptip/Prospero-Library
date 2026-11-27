@@ -198,6 +198,7 @@ class LocalCatalogTest(unittest.TestCase):
                                                "release_date": "2026-10-15", "players": "1-2", "url": url,
                                                "localization": languages})
             self.assertEqual(self.initial()["official_localization"], languages)
+            self.assertEqual(self.initial()["store_release_date"], "2026-10-15")
             manual = self.client.post("/api/games", json={"title": "Manual", "platform": "PS5", "title_id": "PPSA12345"}).json()
             self.assertIsNone(self.client.get(f"/api/games/{manual['id']}/about").json())
         self.assertEqual(requests, [url])
@@ -1093,7 +1094,7 @@ class LocalCatalogTest(unittest.TestCase):
             folder.rename(moved)
             self.wait_job(self.client.post("/api/scan", json={}))
             self.assertEqual(self.initial()["file_state"], "offline")
-            self.assertEqual(self.initial()["patch"]["state"], "unknown")
+            self.assertEqual(self.initial()["patch"]["state"], "available")
             self.assertEqual(len(self.client.get("/api/games").json()), 2)
             self.assertEqual(self.client.put(f"/api/roots/{root_id}", json={"path": str(moved)}).status_code, 200)
             self.wait_job(self.client.post("/api/scan", json={}))
@@ -1273,15 +1274,24 @@ class LocalCatalogTest(unittest.TestCase):
             with patch.object(patches.httpx, "Client", return_value=client):
                 self.wait_job(self.client.post("/api/updates?game_id=1"))
             update = self.initial()["patch"]
-            self.assertEqual(update["state"], expected)
+            self.assertEqual(update["check"]["state"], expected)
+            self.assertEqual(update["state"], "available")
+            self.assertTrue(update["cached"])
+            self.assertEqual(update["latest"]["version"], "01.010.000")
+            self.assertEqual(update["compatible"]["version"], "01.002.000")
             self.assertIsNotNone(update["check"]["last_success"])
+
+        with sqlite3.connect(self.data / "library.db") as db:
+            db.execute("UPDATE checks SET latest_version=NULL WHERE game_id=1")
+        self.assertEqual(self.initial()["patch"]["latest"]["version"], "01.010.000")
 
         def timeout(_):
             raise httpx.ReadTimeout("fixture")
         client = httpx.Client(transport=httpx.MockTransport(timeout))
         with patch.object(patches.httpx, "Client", return_value=client):
             self.wait_job(self.client.post("/api/updates?game_id=1"))
-        self.assertEqual(self.initial()["patch"]["state"], "error")
+        self.assertEqual(self.initial()["patch"]["state"], "available")
+        self.assertTrue(self.initial()["patch"]["cached"])
 
         xml = b'<titlepatch><patch version="01.012.000"/></titlepatch>'
         client = httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200, content=xml)))

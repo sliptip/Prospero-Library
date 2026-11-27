@@ -86,23 +86,55 @@ def run(screenshots, browser_executable):
             page.route("**/api/health", lambda route: route.fulfill(json=mocked_health))
             page.reload(wait_until="networkidle")
             update = page.locator(".sidebar-version").get_by_role("button", name="Проверить обновление Prospero")
-            page.route("**/api/app-update", lambda route:
-                       route.fulfill(json={"version": running_version, "restart": False}))
+            update_url = re.compile(r"/api/app-update\?operation=")
+            page.route(update_url, lambda route:
+                       route.fulfill(json={"version": running_version, "restart": False} if route.request.method == "POST" else None))
             update.click()
             expect(page.get_by_text("Установлена последняя версия Prospero")).to_be_visible()
 
-            def restart_app(route):
-                mocked_health["version"] = "99.1.2"
-                route.fulfill(json={"version": "99.1.2", "restart": True})
+            pending = []
 
-            page.unroute("**/api/app-update")
-            page.route("**/api/app-update", restart_app)
+            def slow_download(route):
+                if route.request.method == "POST":
+                    pending.append(route)
+                else:
+                    route.fulfill(json={"version": "99.1.2", "received": 13, "total": 25})
+
+            page.unroute(update_url)
+            page.route(update_url, slow_download)
+            update.click()
+            expect(page.get_by_text("Скачиваю версию 99.1.2… 52%")).to_be_visible()
             with page.expect_event("framenavigated"):
-                update.click()
+                mocked_health["version"] = "99.1.2"
+                pending[0].fulfill(json={"version": "99.1.2", "restart": True})
             expect(page.locator(".sidebar-version span")).to_have_text("v99.1.2")
-            page.unroute("**/api/app-update")
+            page.unroute(update_url)
             page.unroute("**/api/health")
             page.reload(wait_until="networkidle")
+
+            original = page.request.get(base + "/api/games").json()[0]
+            sorted_page = browser.new_page()
+            store_date = {"id": 102, "title": "Store date", "release_date": None, "store_release_date": "2024-01-01"}
+            manual_date = {"id": 103, "title": "Manual date", "release_date": "2020-01-01", "store_release_date": "2026-01-01"}
+            no_date = {"id": 104, "title": "No date", "release_date": None, "store_release_date": None}
+            patch = {**original["patch"], "state": "available", "cached": True, "check": {"last_success": "2026-11-27"}}
+            sorted_page.route("**/api/games", lambda route: route.fulfill(json=[
+                {**original, **store_date, "file_state": "offline", "patch": patch},
+                {**original, **no_date}, {**original, **manual_date},
+            ]))
+            sorted_page.goto(base, wait_until="networkidle")
+            sorted_page.get_by_label("Сортировка").select_option("release_date")
+            sorting_button = sorted_page.locator(".sort-direction")
+            for mode, selector in (("Шкаф", ".game-tile strong"), ("Список", ".game-row strong")):
+                sorted_page.get_by_role("button", name=mode, exact=True).click()
+                titles = sorted_page.locator(selector)
+                expect(titles).to_have_text(["Store date", "Manual date", "No date"])
+                sorting_button.click()
+                expect(titles).to_have_text(["Manual date", "Store date", "No date"])
+                sorting_button.click()
+                expect(titles).to_have_text(["Store date", "Manual date", "No date"])
+                expect(sorted_page.get_by_role("img", name="Есть обновление")).to_have_attribute("title", re.compile("По данным проверки"))
+            sorted_page.close()
 
             page.get_by_role("link", name="Настройки").click()
             page.get_by_role("button", name="Задать ключ SteamGridDB").click()

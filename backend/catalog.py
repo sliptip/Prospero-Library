@@ -127,18 +127,20 @@ def swap_games(db, source_id, target_id):
     return ordered
 
 
-def patch_view(db, game, target, version_confirmed):
+def patch_view(db, game, target):
     check = db.execute("SELECT * FROM checks WHERE game_id=?", (game["id"],)).fetchone()
     history = [dict(row) for row in db.execute(
         """SELECT version, firmware, source, checked_at, size_bytes FROM patch_history
-           WHERE game_id=? ORDER BY source=? DESC, checked_at DESC""",
-        (game["id"], check["source"] if check else None),
+           WHERE game_id=? ORDER BY checked_at=? DESC, source=? DESC, checked_at DESC""",
+        (game["id"], check["last_success"] if check else None, check["source"] if check else None),
     )]
     history.sort(key=lambda row: version_key(row["version"]), reverse=True)
     manual = next((row for row in history if row["source"] == "Вручную"), None)
     history = [row for row in history if row["source"] != "Вручную"]
     reported = version_key(check["latest_version"]) if check else ()
     latest = next((row for row in history if reported and version_key(row["version"]) == reported), None)
+    if not reported and check and check["last_success"]:
+        latest = next((row for row in history if row["checked_at"] == check["last_success"]), None)
     if latest and target:
         limit = version_key(target)
         candidates = [row for row in history if version_key(row["version"]) <= version_key(latest["version"])]
@@ -152,15 +154,13 @@ def patch_view(db, game, target, version_confirmed):
         compatible = None
     state = "unknown"
     local_version = version_key(game["collection_version"])
-    if latest and local_version and version_confirmed:
-        if local_version >= version_key(latest["version"]):
-            state = "current"
-        elif game["file_state"] != "offline":
-            state = "available"
-    if check and check["state"] == "error":
+    if latest and local_version:
+        state = "current" if local_version >= version_key(latest["version"]) else "available"
+    elif check and check["state"] == "error" and not latest:
         state = "error"
     return {"state": state, "latest": latest, "manual": manual, "compatible": compatible, "history": history,
-            "target": target or None, "check": dict(check) if check else None}
+            "cached": bool(latest and check["state"] != "ok"), "target": target or None,
+            "check": dict(check) if check else None}
 
 
 def ps4_packages(db, title_id):
@@ -220,9 +220,10 @@ def library(db, game_id=None):
         game["manifest_uri"] = manual.get("version_uri")
         game["version_uri"] = game["manifest_uri"] or imported.get("version_uri") or defaults.get("version_uri")
         game["content_id"] = imported.get("content_id") or defaults.get("content_id")
-        localization = db.execute("SELECT json_extract(details, '$.localization') FROM store_about WHERE content_id=?",
-                                  (game["content_id"],)).fetchone() if game["content_id"] else None
-        game["official_localization"] = json.loads(localization[0]) if localization and localization[0] else None
+        about = db.execute("SELECT json_extract(details, '$.localization'), json_extract(details, '$.release_date') "
+                           "FROM store_about WHERE content_id=?", (game["content_id"],)).fetchone() if game["content_id"] else None
+        game["official_localization"] = json.loads(about[0]) if about and about[0] else None
+        game["store_release_date"] = about[1] if about else None
         game["custom_localizations"] = [dict(row) for row in db.execute(
             "SELECT source,interface,subtitles,audio FROM custom_localizations WHERE game_id=? ORDER BY id", (game["id"],),
         )]
@@ -240,8 +241,7 @@ def library(db, game_id=None):
         )]
         for key in ("ru_text", "ru_audio"):
             game[key] = None if game[key] is None else bool(game[key])
-        version_confirmed = not file_build.get("linked") or file_build.get("last_seen")
-        game["patch"] = patch_view(db, game, config.get(game["platform"].lower() + "_firmware"), version_confirmed)
+        game["patch"] = patch_view(db, game, config.get(game["platform"].lower() + "_firmware"))
         if imported and (alias := aliases.get(str(game["id"]))):
             game["platform"], game["title_id"] = alias
     return games

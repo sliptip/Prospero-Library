@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import type { ChangeEvent, FormEvent, ReactNode } from 'react'
 import { ArrowLeft, Box, Download, ExternalLink, ImagePlus, Info, Pencil, Plus, RefreshCw, Trash2, X } from 'lucide-react'
 import { Cover } from './Library'
-import { api, compatiblePatchText, dateText, dlcLabel, fileLabel, json, languageList, localText, patchArchive, patchFirmwareText, patchLabel, russianSupport, sizeText, unknown } from './model'
-import type { ArtCandidate, CustomLocalization, Dlc, Game, GameAbout, LocalPackage, PatchInfo, Platform, StoreDlc, StoreLocalization } from './model'
+import { api, compatiblePatchText, dateText, dlcLabel, fileLabel, json, languageList, localText, patchArchive, patchCacheNote, patchFirmwareText, patchLabel, russianSupport, sizeText, unknown } from './model'
+import type { ArtCandidate, CustomLocalization, Dlc, Game, GameAbout, LocalPackage, PatchInfo, Platform, StoreDlc } from './model'
 
 export function Dialog({ title, close, children, wide = false }: { title: string; close: () => void; children: ReactNode; wide?: boolean }) {
   const ref = useRef<HTMLDialogElement>(null)
@@ -285,9 +285,9 @@ function AboutGameDialog({ about, close, retry }: { about: AboutState; close: ()
   </Dialog>
 }
 
-export function GamePage({ game, back, edit, art, updates, updating, removed, onLocalization }: {
+export function GamePage({ game, back, edit, art, updates, updating, removed, onStoreDetails }: {
   game: Game; back: () => void; edit: () => void; art: () => void; updates: () => void; updating: boolean; removed: () => void;
-  onLocalization: (id: number, contentId: string, localization: StoreLocalization) => void;
+  onStoreDetails: (id: number, contentId: string, details: GameAbout) => void;
 }) {
   const [remove, setRemove] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -296,7 +296,7 @@ export function GamePage({ game, back, edit, art, updates, updating, removed, on
   const [about, setAbout] = useState<AboutState>({ status: 'loading' })
   const [aboutAttempt, setAboutAttempt] = useState(0)
   const store = about.status === 'ready' ? about.game : null
-  const release = game.release_date || store?.release_date
+  const release = game.release_date || store?.release_date || game.store_release_date
   const languages = game.official_localization
   const russian = russianSupport(languages, game.custom_localizations, game.ru_text, game.ru_audio)
   const source = (russian.ruText || russian.ruAudio) && (game.localization_source || russian.source)
@@ -328,13 +328,13 @@ export function GamePage({ game, back, edit, art, updates, updating, removed, on
     setAbout({ status: 'loading' })
     void api<GameAbout | null>(`/games/${id}/about`, { signal: request.signal }).then(data => {
       if (request.signal.aborted) return
-      if (data?.localization) onLocalization(id, contentId, data.localization)
+      if (data) onStoreDetails(id, contentId, data)
       setAbout({ status: 'ready', game: data })
     }).catch(error => {
       if (!request.signal.aborted) setAbout({ status: 'error', message: String((error as Error).message) })
     })
     return () => request.abort()
-  }, [game.id, game.content_id, aboutAttempt, onLocalization])
+  }, [game.id, game.content_id, aboutAttempt, onStoreDetails])
 
   async function removeGame() {
     setBusy(true)
@@ -402,6 +402,7 @@ export function GamePage({ game, back, edit, art, updates, updating, removed, on
           <CompatiblePatch patch={game.patch} />
           <Meta name="Источник">{game.patch.latest?.source || game.patch.check?.source}</Meta>
         </dl>
+        {game.patch.cached && <p className="muted note">{patchCacheNote(game.patch)}</p>}
         {game.patch.check?.message && <p className="muted note">{game.patch.check.message}</p>}
         <a href={patchArchive(game)} target="_blank" rel="noreferrer" className="text-button note">
           {(game.package_identity?.platform || game.platform) === 'PS5' ? 'ProsperoPatches' : 'OrbisPatches'} <ExternalLink size={13} />

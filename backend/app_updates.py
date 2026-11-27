@@ -59,7 +59,7 @@ def latest_release(client, current):
     return Release(version, url, size, digest[7:])
 
 
-def download_release(client, release, destination):
+def download_release(client, release, destination, progress=None):
     url = release.url
     digest = hashlib.sha256()
     total = 0
@@ -80,6 +80,8 @@ def download_release(client, release, destination):
                             raise UpdateError("Размер скачанного файла не совпадает с данными GitHub.")
                         digest.update(block)
                         output.write(block)
+                        if progress is not None:
+                            progress(total)
                 if total != release.size or digest.hexdigest() != release.digest:
                     raise UpdateError("Файл обновления не прошёл проверку SHA-256.")
             except Exception:
