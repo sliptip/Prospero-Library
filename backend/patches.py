@@ -7,6 +7,7 @@ import ssl
 import sys
 import time
 import xml.etree.ElementTree as ET
+from datetime import datetime
 from html.parser import HTMLParser
 from urllib.parse import urlsplit
 
@@ -15,7 +16,7 @@ import truststore
 
 from . import __version__
 from .artwork import bounded_body
-from .catalog import library, version_key
+from .catalog import library, patch_date_key, version_key
 from .database import now
 from .scanner import decode_bcd
 
@@ -125,7 +126,24 @@ def decode_manifest_firmware(key, value, title):
     return decode_bcd(text)
 
 
-def read_patch(fields, title):
+def read_patch_date(fields, source):
+    keys = [("released", "releasedate"), ("released", "releasedat")]
+    if source == PATCH_SITE:
+        keys.append(("archived", "importdate"))
+    elif source == ORBIS_PATCH_SITE:
+        keys.append(("created", "creationdate"))
+    for kind, key in keys:
+        value = fields.get(key)
+        if not isinstance(value, str) or not re.match(r"^\d{4}-\d{2}-\d{2}(?:[ T]|$)", value):
+            continue
+        try:
+            return kind, datetime.fromisoformat(value).date().isoformat()
+        except ValueError:
+            continue
+    return None
+
+
+def read_patch(fields, title, *, provider=SOURCE):
     source = {normalized(key): val for key, val in fields.items()}
     version = next((str(source[key]) for key in (
         "contentversion", "contentver", "appversion", "appver", "version"
@@ -137,7 +155,10 @@ def read_patch(fields, title):
         "systemsoftwareversion", "systemversion", "systemver", "requiredfirmware"
     ) if source.get(key) is not None and (decoded := decode_manifest_firmware(key, source[key], title))), None)
     size = str(source.get("size", source.get("sizebytes", "")))
-    return {"version": version, "firmware": firmware, "size_bytes": int(size) if size.isdigit() and len(size) <= 15 else None}
+    row = {"version": version, "firmware": firmware, "size_bytes": int(size) if size.isdigit() and len(size) <= 15 else None}
+    if date := read_patch_date(source, provider):
+        row["date"] = date
+    return row
 
 
 def parse_xml(data, title):
@@ -209,6 +230,8 @@ def ordered_patches(rows):
             selected[key] = item
         else:
             selected[key] = {**previous, **{field: previous[field] or item[field] for field in ("firmware", "size_bytes")}}
+            if not previous.get("date") and item.get("date"):
+                selected[key]["date"] = item["date"]
     return sorted(selected.values(), key=lambda row: version_key(row["version"]), reverse=True)
 
 
@@ -219,6 +242,11 @@ def save_check(db, game_id, state, stamp, message, latest, rows=(), *, source=SO
                ON CONFLICT(game_id,version,source) DO UPDATE SET firmware=COALESCE(excluded.firmware,patch_history.firmware),
                  size_bytes=COALESCE(excluded.size_bytes,patch_history.size_bytes), checked_at=excluded.checked_at""",
             [(game_id, row["version"], row["firmware"], row["size_bytes"], source, stamp) for row in rows],
+        )
+        db.executemany(
+            """INSERT INTO patch_dates (game_id,version,kind,date) VALUES (?,?,?,?)
+               ON CONFLICT(game_id,version,kind) DO UPDATE SET date=excluded.date""",
+            [(game_id, patch_date_key(row["version"]), *row["date"]) for row in rows if "date" in row],
         )
     db.execute(
         """INSERT INTO checks VALUES (?,?,?,?,?,?,?) ON CONFLICT(game_id) DO UPDATE SET state=excluded.state,
@@ -251,28 +279,29 @@ class PatchPage(HTMLParser):
             self.key = key
 
 
-def retrieve_patch_site(client, title):
+def retrieve_patch_site(client, title, *, timeout=None):
     archive = PATCH_ARCHIVES.get(title[:4])
     if not archive or not re.fullmatch(r"(?:CUSA|PPSA)[0-9]{5}", title):
         return []
     source, host = archive
     site_url = f"https://{host}"
     url = f"{site_url}/{title}"
+    options = {"timeout": timeout} if timeout is not None else {}
     page = PatchPage(title)
-    page.feed(fetch_manifest(client, url, "страница Title ID", source=source).decode("utf-8"))
+    page.feed(fetch_manifest(client, url, "страница Title ID", source=source, **options).decode("utf-8"))
     if not page.key:
         raise ValueError("Страница не содержит публичного списка патчей для этого Title ID")
     # This is the public version list requested when the title page opens.
     data = fetch_manifest(client, f"{site_url}/api/internal/loadpatches", "список патчей",
                           source=source, method="POST", content=json.dumps({"titleid": title, "key": page.key}),
                           headers={"Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-                                   "Accept": "application/json", "Origin": site_url, "Referer": url})
+                                   "Accept": "application/json", "Origin": site_url, "Referer": url}, **options)
     result = json.loads(data)
     if (not isinstance(result, dict) or result.get("success") is not True or result.get("titleid") != title or
             not isinstance(result.get("patches"), list)):
         raise ValueError("Ответ списка патчей не подтверждает Title ID")
     entries = result["patches"]
-    rows = [row for entry in entries if isinstance(entry, dict) and (row := read_patch(entry, title))]
+    rows = [row for entry in entries if isinstance(entry, dict) and (row := read_patch(entry, title, provider=source))]
     if len(rows) != len(entries):
         raise ValueError("Список содержит патчи в неизвестном формате")
     return ordered_patches(rows)
@@ -359,7 +388,20 @@ def check_one(database, client, game, stop):
     source = SOURCE
     rows, state, message = check_sony(client, game["version_uri"], title)
     archive = PATCH_ARCHIVES.get(title[:4])
-    if not rows and archive and not stop.is_set():
+    if rows and archive and not stop.is_set():
+        latest = rows[0]
+        previously = game["patch"]["latest"]
+        version = version_key(latest["version"])
+        previously_dated = game["patch"]["latest_date"] and previously and version_key(previously["version"]) == version
+        if not latest.get("date") and not previously_dated:
+            try:
+                archived = retrieve_patch_site(client, title, timeout=3)
+            except (httpx.HTTPError, ValueError):
+                archived = []
+            match = next((row for row in archived if row.get("date") and version_key(row["version"]) == version), None)
+            if match:
+                latest["date"] = match["date"]
+    elif archive and not stop.is_set():
         source = archive[0]
         logger.info("%s: %s. Проверяем %s", title, message, source)
         try:

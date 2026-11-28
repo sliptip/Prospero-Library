@@ -12,6 +12,7 @@ export type Patch = { version: string; firmware: string | null; source: string; 
 export type PatchState = 'unknown' | 'available' | 'current' | 'error'
 export type PatchInfo = {
   state: PatchState; latest: Patch | null; manual: Patch | null; compatible: Patch | null;
+  latest_date: { kind: 'released' | 'created' | 'archived'; date: string } | null;
   target: string | null; history: Patch[]; cached: boolean; manual_active: boolean;
   check: { state: string; message: string | null; checked_at: string; last_success: string | null; source: string } | null;
 }

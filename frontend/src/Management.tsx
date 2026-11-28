@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { Clipboard, Download, FileText, Folder, History, Plus, RefreshCw, RotateCcw, ScanLine, Trash2, X } from 'lucide-react'
-import { CompatiblePatch, Dialog, ManualPatchDetails } from './Game'
+import { CompatiblePatch, Dialog, LatestPatchDate, ManualPatchDetails } from './Game'
 import { Cover } from './Library'
 import { api, dateText, json, patchCacheNote, patchFirmwareText, patchLabel, unknown } from './model'
 import type { Game, Job, Root, Settings } from './model'
@@ -29,6 +29,7 @@ export function Updates({ games, open, start, busy }: {
           <div><dt>Последний официальный</dt><dd className="mono">{game.patch.latest?.version || unknown}</dd></div>
           <div><dt>Прошивка патча</dt><dd className="mono" title={game.patch.latest?.firmware ?? undefined}>
             {patchFirmwareText(game.patch.latest?.firmware)}</dd></div>
+          <LatestPatchDate patch={game.patch} />
           <CompatiblePatch patch={game.patch} />
           <ManualPatchDetails patch={game.patch} />
         </dl>

@@ -10,7 +10,7 @@ from threading import RLock
 BASE = Path(__file__).resolve().parent.parent
 APP_DIRECTORY = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else BASE
 APP_ID = 1347571527
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 LEGACY_DLC_STATUSES = {"configured": "included", "verified": "included", "absent": "not_added"}
 SCHEMA = """
 CREATE TABLE games (
@@ -76,6 +76,13 @@ CREATE TABLE ps4_extras (
 );
 """
 PS4_EXTRA_INDEX = "CREATE INDEX ps4_extras_by_title ON ps4_extras(title_id);"
+PATCH_DATES_SCHEMA = """
+CREATE TABLE patch_dates (
+    game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+    version TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('released','created','archived')),
+    date TEXT NOT NULL, PRIMARY KEY (game_id, version, kind)
+);
+"""
 SCHEMAS = {
     1: SCHEMA,
     2: SCHEMA + STORE_ABOUT_SCHEMA,
@@ -83,6 +90,7 @@ SCHEMAS = {
 }
 SCHEMAS[4] = SCHEMAS[3] + PS4_EXTRA_SCHEMA + PS4_EXTRA_INDEX
 SCHEMAS[5] = SCHEMAS[4]
+SCHEMAS[6] = SCHEMAS[5] + PATCH_DATES_SCHEMA
 
 
 def now():
@@ -114,7 +122,9 @@ def upgrade(db, version, before_migration=None):
     if version < 5:
         db.executemany("UPDATE dlc SET status=? WHERE status=?",
                        [(current, old) for old, current in LEGACY_DLC_STATUSES.items()])
-        db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+    if version < 6:
+        db.execute(PATCH_DATES_SCHEMA)
+    db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 
 class Database:
@@ -158,7 +168,8 @@ class Database:
             elif version not in SCHEMAS or db.execute("PRAGMA application_id").fetchone()[0] != APP_ID:
                 raise RuntimeError("Неподдерживаемая версия базы Prospero Library")
             else:
-                upgrade(db, version, before_migration=lambda: self.save_migration_snapshot("library-before-v5.db"))
+                snapshot = f"library-before-v{max(5, version + 1)}.db"
+                upgrade(db, version, before_migration=lambda: self.save_migration_snapshot(snapshot))
             db.execute("UPDATE jobs SET status='interrupted', finished_at=? WHERE status IN ('running','cancelling')", (now(),))
 
     def save_migration_snapshot(self, name):

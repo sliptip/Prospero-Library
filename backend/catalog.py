@@ -97,6 +97,10 @@ def version_key(value):
     return parts + (0,) * (4 - len(parts))
 
 
+def patch_date_key(version):
+    return ".".join(map(str, version_key(version)))
+
+
 def settings(db):
     return dict(db.execute("SELECT key,value FROM settings").fetchall())
 
@@ -154,6 +158,11 @@ def patch_view(db, game, target):
     latest = next((row for row in history if reported and version_key(row["version"]) == reported), None)
     if not reported and check and check["last_success"]:
         latest = next((row for row in history if row["checked_at"] == check["last_success"]), None)
+    latest_date = db.execute(
+        """SELECT kind, date FROM patch_dates WHERE game_id=? AND version=?
+           ORDER BY CASE kind WHEN 'released' THEN 0 WHEN 'created' THEN 1 ELSE 2 END LIMIT 1""",
+        (game["id"], patch_date_key(latest["version"])),
+    ).fetchone() if latest else None
     official_version = version_key(latest["version"]) if latest else ()
     manual_version = version_key(manual["version"]) if manual else ()
     manual_active = manual_version > official_version
@@ -179,6 +188,7 @@ def patch_view(db, game, target):
     elif not reference_version and check and check["state"] == "error":
         state = "error"
     return {"state": state, "latest": latest, "manual": manual, "compatible": compatible, "history": history,
+            "latest_date": dict(latest_date) if latest_date else None,
             "manual_active": manual_active, "cached": bool(latest and check["state"] != "ok"), "target": target or None,
             "check": dict(check) if check else None}
 

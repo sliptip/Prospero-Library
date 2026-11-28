@@ -503,6 +503,7 @@ class LocalCatalogTest(unittest.TestCase):
         file = older / "library.db"
         with sqlite3.connect(self.data / "library.db") as current, sqlite3.connect(file) as legacy:
             current.backup(legacy)
+            legacy.execute("DROP TABLE patch_dates")
             legacy.execute("DROP TABLE ps4_extras")
             legacy.execute("DROP TABLE custom_localizations")
             legacy.execute("DROP TABLE store_about")
@@ -526,6 +527,7 @@ class LocalCatalogTest(unittest.TestCase):
         content_id = self.initial()["content_id"]
         cached = {"language": "ru", "description": "Описание в старой базе"}
         with sqlite3.connect(self.data / "library.db") as db:
+            db.execute("DROP TABLE patch_dates")
             db.execute("DROP TABLE ps4_extras")
             db.execute("DROP TABLE custom_localizations")
             db.execute("PRAGMA user_version = 2")
@@ -540,6 +542,7 @@ class LocalCatalogTest(unittest.TestCase):
         legacy = self.root / "previous.db"
         with sqlite3.connect(self.data / "library.db") as current, sqlite3.connect(legacy) as old:
             current.backup(old)
+            old.execute("DROP TABLE patch_dates")
             old.execute("DROP TABLE ps4_extras")
             old.execute("PRAGMA user_version=3")
         name = "prospero-20261125-130000-000000.zip"
@@ -558,6 +561,7 @@ class LocalCatalogTest(unittest.TestCase):
             (1, "Исключённое", None, "absent", "ABSENT-ID"),
         ]
         with sqlite3.connect(file) as old:
+            old.execute("DROP TABLE patch_dates")
             old.execute("DELETE FROM dlc")
             old.executemany("INSERT INTO dlc (game_id,name,description,status,content_id) VALUES (?,?,?,?,?)", rows)
             old.execute("PRAGMA user_version=4")
@@ -584,7 +588,7 @@ class LocalCatalogTest(unittest.TestCase):
         self.assertEqual(restored.status_code, 200, restored.text)
         self.assertEqual(self.initial()["dlc"], expected)
         with sqlite3.connect(file) as upgraded:
-            self.assertEqual(upgraded.execute("PRAGMA user_version").fetchone()[0], 5)
+            self.assertEqual(upgraded.execute("PRAGMA user_version").fetchone()[0], database.SCHEMA_VERSION)
 
     def test_playstation_store_art_preserves_bytes_and_backup(self):
         content_id = self.initial()["content_id"]
@@ -1084,7 +1088,7 @@ class LocalCatalogTest(unittest.TestCase):
 
             def patch_response(request):
                 self.assertEqual(str(request.url), VERSION_URI)
-                return httpx.Response(200, content=b'<titlepatch><package content_ver="01.003.000" system_ver="337641479"/></titlepatch>')
+                return httpx.Response(200, content=b'<titlepatch><package content_ver="01.003.000" system_ver="337641479" release_date="2026-11-13"/></titlepatch>')
 
             patch_client = httpx.Client(transport=httpx.MockTransport(patch_response))
             with patch.object(patches.httpx, "Client", return_value=patch_client):
@@ -1268,6 +1272,7 @@ class LocalCatalogTest(unittest.TestCase):
         self.assertEqual((update["state"], update["latest"]["version"], update["compatible"]["version"]),
                          ("available", "01.010.000", "01.002.000"))
         self.assertIsNotNone(update["check"]["last_success"])
+        self.assertIsNone(update["latest_date"])
 
         for status, expected in [(429, "error"), (404, "unknown")]:
             client = httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(status)))
@@ -1308,6 +1313,72 @@ class LocalCatalogTest(unittest.TestCase):
         self.assertEqual(response.json()["patch"]["manual"]["source"], "Вручную")
         self.assertEqual(response.json()["patch"]["latest"]["version"], "01.012.000")
         self.assertTrue(response.json()["patch"]["manual_active"])
+
+    def test_latest_patch_date_matches_version_and_survives_failed_checks(self):
+        title = "PPSA35399"
+        key = "a" * 64
+        patch_xml = '<titlepatch><patch version="01.004.000" /></titlepatch>'
+        sony_xml = patch_xml
+        archive_versions = [
+            {"content_ver": "01.009.000", "import_date": "2026-11-17 17:35:06"},
+            {"content_ver": "1.4", "import_date": "2026-10-01 09:20:12"},
+            {"content_ver": "01.003.000", "import_date": "2026-09-30 01:11:00"},
+        ]
+        archive_hits = []
+
+        def respond(request):
+            if request.url.host == patches.PS5_HOST:
+                return httpx.Response(200, text=sony_xml) if sony_xml else httpx.Response(503)
+            archive_hits.append(request.method)
+            if not sony_xml:
+                return httpx.Response(503)
+            if request.method == "GET":
+                return httpx.Response(200, text=f'<div id="dynpatch" data-titleid="{title}" data-key="{key}"></div>')
+            return httpx.Response(200, json={"success": True, "titleid": title, "patches": archive_versions})
+
+        def check():
+            client = httpx.Client(transport=httpx.MockTransport(respond))
+            with patch.object(patches.httpx, "Client", return_value=client):
+                self.wait_job(self.client.post("/api/updates?game_id=1"))
+            return self.initial()["patch"]
+
+        first = check()
+        self.assertEqual(first["latest"]["source"], patches.SOURCE)
+        self.assertEqual(first["latest"]["version"], "01.004.000")
+        self.assertEqual(first["latest_date"], {"date": "2026-10-01", "kind": "archived"})
+        self.assertEqual(archive_hits, ["GET", "POST"])
+        self.assertEqual(check()["latest_date"], first["latest_date"])
+        self.assertEqual(archive_hits, ["GET", "POST"])
+
+        sony_xml = '<titlepatch><patch version="01.004.000" release_date="2026-09-29T17:00:00Z"/></titlepatch>'
+        stated = check()
+        self.assertEqual(stated["latest_date"], {"date": "2026-09-29", "kind": "released"})
+        sony_xml = ""
+        cached = check()
+        self.assertTrue(cached["cached"])
+        self.assertEqual(cached["latest_date"], stated["latest_date"])
+
+        sony_xml = '<titlepatch><patch version="01.005.000" release_date="2026-11-31"/></titlepatch>'
+        result = check()
+        self.assertEqual(result["latest"]["version"], "01.005.000")
+        self.assertIsNone(result["latest_date"])
+
+    def test_version_five_migration_preserves_patch_history_and_dlc(self):
+        db_path = self.data / "library.db"
+        original_dlc = self.initial()["dlc"]
+        with sqlite3.connect(db_path) as db:
+            patches.save_check(db, 1, "ok", "2026-11-27T00:00:00Z", None, "01.001.000", [{
+                "version": "01.001.000", "firmware": "13.60", "size_bytes": None,
+            }])
+            db.execute("DROP TABLE patch_dates")
+            db.execute("PRAGMA user_version=5")
+        with TestClient(create_app(self.data), base_url="http://localhost") as restarted:
+            game = restarted.get("/api/games/1").json()
+        self.assertEqual(game["dlc"], original_dlc)
+        self.assertEqual(game["patch"]["latest"]["version"], "01.001.000")
+        self.assertIsNone(game["patch"]["latest_date"])
+        with sqlite3.connect(self.data / "backups" / "library-before-v6.db") as snapshot:
+            self.assertEqual(snapshot.execute("PRAGMA user_version").fetchone()[0], 5)
 
     def test_manual_patch_survives_failed_checks_and_defers_to_confirmed_versions(self):
         url = "/api/games/1/manual-patch"
@@ -1386,7 +1457,7 @@ class LocalCatalogTest(unittest.TestCase):
         page = f'<div id="dynpatch" data-titleid="{title}" data-key="{key}"></div>'
         entries = [
             {"content_ver": "01.001.000", "required_firmware": "14.00.00.39"},
-            {"content_ver": "01.001.004", "required_firmware": "14.20.00.07"},
+            {"content_ver": "01.001.004", "required_firmware": "14.20.00.07", "import_date": "2026-11-17 17:35:06"},
             {"content_ver": "01.001.002", "required_firmware": "14.10.00.03"},
         ]
 
@@ -1411,6 +1482,7 @@ class LocalCatalogTest(unittest.TestCase):
         self.assertEqual(result["check"]["source"], "ProsperoPatches")
         self.assertEqual(result["latest"]["firmware"], "14.20.00.07")
         self.assertEqual(result["latest"]["version"], "01.001.004")
+        self.assertEqual(result["latest_date"], {"kind": "archived", "date": "2026-11-17"})
         self.assertEqual(len(result["history"]), 3)
         self.assertIsNone(result["compatible"])
         self.assertEqual(patches.decode_manifest_firmware("systemver", "337641479", title), "14.20.00.07")
@@ -1418,8 +1490,8 @@ class LocalCatalogTest(unittest.TestCase):
     def test_orbispatches_checks_ps4_games_without_a_sony_manifest(self):
         title = "CUSA20469"
         key = "b" * 64
-        entries = [{"version": "01.01", "required_firmware": "7.51"},
-                   {"version": "01.05", "required_firmware": "9.60"}]
+        entries = [{"version": "01.01", "required_firmware": "7.51", "creation_date": "2019-11-31"},
+                   {"version": "01.05", "required_firmware": "9.60", "creation_date": "2020-02-13"}]
         paths = []
 
         def respond(request):
@@ -1446,3 +1518,4 @@ class LocalCatalogTest(unittest.TestCase):
         self.assertEqual(update["latest"]["source"], "OrbisPatches")
         self.assertEqual(update["latest"]["version"], "01.05")
         self.assertEqual(update["latest"]["firmware"], "9.60")
+        self.assertEqual(update["latest_date"], {"kind": "created", "date": "2020-02-13"})

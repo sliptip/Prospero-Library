@@ -25,7 +25,7 @@ from backend import patches
 from backend.__main__ import main
 
 with patch.object(patches, "retrieve_patch_site", return_value=[
-        {"version": "01.005.000", "firmware": "9.60", "size_bytes": None}
+        {"version": "01.005.000", "firmware": "9.60", "size_bytes": None, "date": ("archived", "2026-11-17")}
 ]):
     main()
 """
@@ -468,6 +468,8 @@ def run(screenshots, browser_executable):
             expect(page.get_by_role("heading", name="Тестовая карточка")).to_be_visible()
             official_patch = page.get_by_text("Последний официальный патч", exact=True).locator("..")
             expect(official_patch.get_by_text("01.005.000", exact=True)).to_be_visible()
+            patch_date = page.get_by_text("Патч в архиве с", exact=True).locator("..")
+            expect(patch_date).to_contain_text("17 ноября 2026")
             expect(page.get_by_text("Есть обновление", exact=True)).to_be_visible()
             expect(page.get_by_role("button", name="Об игре")).to_have_count(0)
             expect(page.get_by_text("Источник русификации")).to_have_count(0)

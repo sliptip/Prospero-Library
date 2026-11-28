@@ -276,6 +276,14 @@ export function CompatiblePatch({ patch }: { patch: PatchInfo }) {
   return text && <Meta name={'Совместимый патч · ' + patch.target} className="mono">{text}</Meta>
 }
 
+export function LatestPatchDate({ patch }: { patch: PatchInfo }) {
+  if (!patch.latest) return null
+  const value = patch.latest_date
+  const label = value?.kind === 'archived' ? 'Патч в архиве с'
+    : value?.kind === 'created' ? 'Дата создания пакета патча' : 'Дата выхода патча'
+  return <Meta name={label}>{dateText(value?.date)}</Meta>
+}
+
 export function ManualPatchDetails({ patch }: { patch: PatchInfo }) {
   const manual = patch.manual
   if (!manual) return null
@@ -488,6 +496,7 @@ export function GamePage({ game, back, edit, art, updates, updating, removed, on
           <Meta name="Прошивка патча" className="mono" title={game.patch.latest?.firmware ?? undefined}>
             {patchFirmwareText(game.patch.latest?.firmware)}
           </Meta>
+          <LatestPatchDate patch={game.patch} />
           <CompatiblePatch patch={game.patch} />
           <Meta name="Источник">{game.patch.latest?.source || game.patch.check?.source}</Meta>
           <ManualPatchDetails patch={game.patch} />
