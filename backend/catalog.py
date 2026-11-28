@@ -18,7 +18,7 @@ class DLC(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: Name
     description: str | None = None
-    status: Literal["included", "not_added", "unknown"] = "not_added"
+    status: Literal["included", "not_added", "unknown"] = "included"
     content_id: str | None = Field(default=None, max_length=80)
 
     @field_validator("status", mode="before")

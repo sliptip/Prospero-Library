@@ -349,6 +349,23 @@ def run(screenshots, browser_executable):
             expect(dlc_status.first.locator("option")).to_have_text(["В образе", "Не добавлено"])
             expect(dlc_status.first).to_have_value("included")
             expect(editor.get_by_role("combobox", name="Русский текст").locator("option:checked")).to_have_text("Авто · Есть")
+            page.set_viewport_size({"width": 390, "height": 620})
+            descriptions = editor.get_by_role("textbox", name="Описание", exact=True)
+            descriptions.first.evaluate("field => { field.style.height = '420px' }")
+            assert editor.evaluate("""dialog => {
+              const last = [...dialog.querySelectorAll('.dlc-form')].at(-1).getBoundingClientRect()
+              const actions = dialog.querySelector('.dlc-actions').getBoundingClientRect()
+              const footer = dialog.querySelector('.dialog-footer').getBoundingClientRect()
+              return last.bottom <= actions.top && actions.bottom <= footer.top
+            }""")
+            editor.get_by_role("button", name="Добавить DLC", exact=True).click()
+            new_name = editor.get_by_role("textbox", name="Название DLC").last
+            expect(new_name).to_be_focused()
+            expect(new_name).to_be_in_viewport(ratio=1)
+            expect(dlc_status.last).to_have_value("included")
+            new_name.fill("DLC вручную")
+            dlc_status.last.select_option("not_added")
+            page.set_viewport_size({"width": 1440, "height": 1000})
             expansion = "JP0101-PPSA35399_00-EXPANSION0000001"
             local_expansion = "JP0101-CUSA35399_00-EXPANSION0000001"
             page.route("**/api/games/1/store-dlc", lambda route: route.fulfill(json=[
@@ -362,11 +379,13 @@ def run(screenshots, browser_executable):
             editor.get_by_role("button", name="Найти в магазине").click()
             choices = editor.get_by_role("list", name="Результаты PlayStation Store")
             expect(choices.get_by_text("Состав издания")).to_be_visible()
+            expect(choices.get_by_role("listitem").first).to_be_in_viewport()
             choices.get_by_role("button", name="Добавить Special Edition").click()
             expect(editor.get_by_role("textbox", name="Название DLC").last).to_have_value("Бонусы Special Edition")
+            expect(dlc_status.last).to_have_value("included")
             choices.get_by_role("button", name="Добавить DLC из магазина").click()
             expect(editor.get_by_role("textbox", name="Название DLC").last).to_have_value("DLC из магазина")
-            expect(dlc_status.last).to_have_value("not_added")
+            expect(dlc_status.last).to_have_value("included")
             expect(editor.get_by_role("textbox", name="Описание", exact=True).last).to_have_value("Описание загружено из магазина")
             editor.get_by_role("button", name="Добавить локализацию").click()
             editor.get_by_role("button", name="Добавить локализацию").click()
@@ -386,6 +405,7 @@ def run(screenshots, browser_executable):
             expect(page.get_by_role("heading", name="Отдельный перевод")).to_be_visible()
             expect(page.get_by_text("Бонусы Special Edition", exact=True)).to_be_visible()
             expect(page.get_by_text("Описание загружено из магазина", exact=True)).to_be_visible()
+            expect(page.locator(".dlc-row").filter(has_text="DLC вручную").get_by_text("Не добавлено", exact=True)).to_be_visible()
             with sqlite3.connect(directory / "data" / "library.db") as db:
                 self_saved_id = db.execute("SELECT content_id FROM dlc WHERE name='DLC из магазина'").fetchone()
                 assert self_saved_id == (local_expansion,)
@@ -436,6 +456,11 @@ def run(screenshots, browser_executable):
             assert not (directory / "data" / "backups" / disposable).exists()
 
             page.get_by_role("button", name="Добавить игру", exact=True).first.click()
+            new_editor = page.get_by_role("dialog", name="Добавить игру")
+            new_editor.get_by_role("button", name="Добавить DLC", exact=True).click()
+            expect(new_editor.get_by_role("textbox", name="Название DLC")).to_be_focused()
+            expect(new_editor.get_by_role("combobox", name="Статус DLC")).to_have_value("included")
+            new_editor.get_by_role("button", name="Удалить строку DLC").click()
             page.get_by_role("textbox", name="Название", exact=True).fill("Тестовая карточка")
             page.get_by_role("textbox", name="Title ID").fill("PPSA99999")
             page.get_by_label("Версия в коллекции").fill("01.000.000")

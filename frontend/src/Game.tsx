@@ -19,7 +19,7 @@ export function Dialog({ title, close, children, wide = false }: { title: string
   </dialog>
 }
 
-const blankDlc: Dlc = { name: '', description: null, content_id: null, status: 'not_added' }
+const blankDlc: Dlc = { name: '', description: null, content_id: null, status: 'included' }
 const blankLocalization: CustomLocalization = { source: null, interface: null, subtitles: null, audio: null }
 const customLanguageFields = [
   ['interface', 'Языки интерфейса'], ['subtitles', 'Языки субтитров'], ['audio', 'Языки озвучки'],
@@ -49,7 +49,10 @@ export function GameEditor({ game, close, save }: { game?: Game; close: () => vo
   }
   const [fields, setFields] = useState(savedFields)
   const [dlc, setDlc] = useState<Dlc[]>(game?.dlc || [])
+  const newDlcName = useRef<HTMLInputElement>(null)
+  const focusNewDlc = useRef(false)
   const [storeDlc, setStoreDlc] = useState<StoreDlc[] | null>(null)
+  const storeResults = useRef<HTMLDivElement>(null)
   const [storeError, setStoreError] = useState('')
   const [storeLoading, setStoreLoading] = useState(false)
   const [addingDlc, setAddingDlc] = useState<string | null>(null)
@@ -70,6 +73,23 @@ export function GameEditor({ game, close, save }: { game?: Game; close: () => vo
     readOnly: locked(name),
     onChange: (event: ChangeEvent<HTMLInputElement>) => setFields({ ...fields, [name]: event.target.value }),
   })
+
+  useEffect(() => {
+    if (!focusNewDlc.current) return
+    focusNewDlc.current = false
+    newDlcName.current?.focus()
+  }, [dlc.length])
+
+  useEffect(() => {
+    if (document.activeElement?.closest('.dlc-form')) return
+    storeResults.current?.querySelector('p[role="status"], li')?.scrollIntoView({ block: 'nearest' })
+  }, [storeDlc, storeError])
+
+  function addDlc() {
+    focusNewDlc.current = true
+    setDlc(items => [...items, { ...blankDlc }])
+  }
+
   function updateLocalization(index: number, key: keyof CustomLocalization, value: string) {
     setCustom(groups => groups.map((group, i) => i === index ? { ...group, [key]: value } : group))
   }
@@ -190,42 +210,10 @@ export function GameEditor({ game, close, save }: { game?: Game; close: () => vo
         </div>
         <label className="field span-two">Примечания<textarea name="notes" rows={3} maxLength={12000} defaultValue={game?.notes || ''} /></label>
         <div className="span-two dlc-editor">
-          <div className="section-heading dlc-actions">
-            <h3>Дополнения</h3>
-            <div className="button-row">
-              {game?.content_id && <button className="button outlined compact" type="button"
-                onClick={() => storeDlc ? setStoreDlc(null) : void findDlc()} disabled={storeLoading || !!addingDlc}
-                aria-expanded={storeDlc !== null}>
-                {storeLoading ? 'Ищу…' : storeDlc ? 'Скрыть результаты' : 'Найти в магазине'}
-              </button>}
-              <button className="button outlined compact" type="button" onClick={() => setDlc([...dlc, { ...blankDlc }])}
-                disabled={dlc.length >= 100 || !!addingDlc}><Plus size={15} /> Добавить DLC</button>
-            </div>
-          </div>
-          {storeError && <p className="muted note" role="status">{storeError}</p>}
-          {storeDlc?.length === 0 && <p className="muted note" role="status">Магазин не показал дополнений или состава изданий для этой игры.</p>}
-          {!!storeDlc?.length && <ul className="store-dlc-list" aria-label="Результаты PlayStation Store">
-            {storeDlc.map(item => {
-              const existing = dlc.find(row => matchesStoreDlc(row, item))
-              const replaceEdition = !!existing && item.kind === 'edition' && item.description !== existing.description
-              const refreshDescription = !!existing?.content_id && item.kind === 'dlc' && !!item.content_id
-              const canFill = !!existing && ((!existing.content_id && !!item.content_id) || replaceEdition)
-              const action = refreshDescription ? 'Обновить описание' : replaceEdition ? 'Вставить состав'
-                : canFill ? 'Заполнить' : existing ? 'В карточке' : 'Добавить'
-              return <li key={item.kind + item.id}>
-                <div><small className="muted">{item.kind === 'edition' ? 'Состав издания' : 'DLC'}</small>
-                  <strong>{item.name}</strong>
-                  {item.description && <p>{item.description}</p>}</div>
-                <button type="button" className="text-button" aria-label={action + ' ' + item.name}
-                  disabled={!!addingDlc || (existing ? !canFill && !refreshDescription : dlc.length >= 100)}
-                  onClick={() => void addStoreDlc(item, refreshDescription)}>
-                  {addingDlc === item.id ? 'Загружаю…' : action}
-                </button>
-              </li>
-            })}
-          </ul>}
+          <h3>Дополнения</h3>
           {dlc.map((item, index) => <div className="dlc-form" key={index}>
-            <label className="field">Название DLC<input value={item.name} required maxLength={256}
+            <label className="field">Название DLC<input ref={index === dlc.length - 1 ? newDlcName : null}
+              value={item.name} required maxLength={256}
               onChange={event => setDlc(dlc.map((other, i) => i === index ? { ...other, name: event.target.value } : other))} /></label>
             <label className="field">Статус DLC<select value={item.status} onChange={event => setDlc(dlc.map((other, i) =>
               i === index ? { ...other, status: event.target.value as Dlc['status'] } : other))}>
@@ -237,6 +225,39 @@ export function GameEditor({ game, close, save }: { game?: Game; close: () => vo
             <label className="field span-two">Описание<textarea rows={2} value={item.description || ''}
               onChange={event => setDlc(dlc.map((other, i) => i === index ? { ...other, description: event.target.value } : other))} /></label>
           </div>)}
+          <div className="button-row dlc-actions">
+            {game?.content_id && <button className="button outlined compact" type="button"
+              onClick={() => storeDlc ? setStoreDlc(null) : void findDlc()} disabled={storeLoading || !!addingDlc}
+              aria-expanded={storeDlc !== null}>
+              {storeLoading ? 'Ищу…' : storeDlc ? 'Скрыть результаты' : 'Найти в магазине'}
+            </button>}
+            <button className="button outlined compact" type="button" onClick={addDlc}
+              disabled={dlc.length >= 100 || !!addingDlc}><Plus size={15} /> Добавить DLC</button>
+          </div>
+          <div ref={storeResults}>
+            {storeError && <p className="muted note" role="status">{storeError}</p>}
+            {storeDlc?.length === 0 && <p className="muted note" role="status">Магазин не показал дополнений или состава изданий для этой игры.</p>}
+            {!!storeDlc?.length && <ul className="store-dlc-list" aria-label="Результаты PlayStation Store">
+              {storeDlc.map(item => {
+                const existing = dlc.find(row => matchesStoreDlc(row, item))
+                const replaceEdition = !!existing && item.kind === 'edition' && item.description !== existing.description
+                const refreshDescription = !!existing?.content_id && item.kind === 'dlc' && !!item.content_id
+                const canFill = !!existing && ((!existing.content_id && !!item.content_id) || replaceEdition)
+                const action = refreshDescription ? 'Обновить описание' : replaceEdition ? 'Вставить состав'
+                  : canFill ? 'Заполнить' : existing ? 'В карточке' : 'Добавить'
+                return <li key={item.kind + item.id}>
+                  <div><small className="muted">{item.kind === 'edition' ? 'Состав издания' : 'DLC'}</small>
+                    <strong>{item.name}</strong>
+                    {item.description && <p>{item.description}</p>}</div>
+                  <button type="button" className="text-button" aria-label={action + ' ' + item.name}
+                    disabled={!!addingDlc || (existing ? !canFill && !refreshDescription : dlc.length >= 100)}
+                    onClick={() => void addStoreDlc(item, refreshDescription)}>
+                    {addingDlc === item.id ? 'Загружаю…' : action}
+                  </button>
+                </li>
+              })}
+            </ul>}
+          </div>
         </div>
         {error && <p className="error span-two" role="alert">{error}</p>}
       </div>

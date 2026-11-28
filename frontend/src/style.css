@@ -335,8 +335,7 @@ kbd { color: #aba8a4; flex-shrink: 0; background: #292a2c; border: 1px solid #42
 .dlc-editor, .localization-editor, .localization-group { border-top: 1px solid var(--line); padding-top: 11px; }
 .dlc-editor h3, .localization-editor h3, .localization-group h3 { font-size: 14px; font-weight: 800; }
 .preference-label { white-space: normal; }
-.dlc-actions { flex-wrap: wrap; gap: 8px; }
-.dlc-actions .button-row { margin: 0; }
+.dlc-actions { justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .store-dlc-list { list-style: none; margin: 10px 0; padding: 0; border: 1px solid var(--line); border-radius: 8px; }
 .store-dlc-list li { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 9px 11px; }
 .store-dlc-list li + li { border-top: 1px solid var(--line); }

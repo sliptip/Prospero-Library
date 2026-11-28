@@ -344,7 +344,7 @@ class LocalCatalogTest(unittest.TestCase):
         response = self.client.put("/api/games/1", json=updated)
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(self.initial()["dlc"][-1]["description"], full_description)
-        self.assertEqual(self.initial()["dlc"][-1]["status"], "not_added")
+        self.assertEqual(self.initial()["dlc"][-1]["status"], "included")
 
     def test_shared_store_dlc_links_to_local_ps4_package(self):
         package_id = "UP2045-CUSA27069_00-NSTW000000000000"
