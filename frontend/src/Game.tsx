@@ -279,7 +279,7 @@ export function CompatiblePatch({ patch }: { patch: PatchInfo }) {
 export function LatestPatchDate({ patch }: { patch: PatchInfo }) {
   if (!patch.latest) return null
   const value = patch.latest_date
-  const label = value?.kind === 'archived' ? 'Патч в архиве с'
+  const label = value?.kind === 'archived' ? 'Добавлен в PP'
     : value?.kind === 'created' ? 'Дата создания пакета патча' : 'Дата выхода патча'
   return <Meta name={label}>{dateText(value?.date)}</Meta>
 }
